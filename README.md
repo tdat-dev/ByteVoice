@@ -17,6 +17,9 @@ dạng dùng **faster-whisper** cục bộ.
   (Chrome, VS Code, Word…) và hiển thị icon của app đó thay cho mic. Khi đang
   dịch sẽ hiện spinner; không lấy được icon thì fallback về mic.
 - **Tự nhận GPU** — có CUDA → `int8_float16`, không có → CPU `int8`.
+- **Tự cập nhật (delta)** — app kiểm tra GitHub lúc khởi động; có bản mới thì hỏi
+  rồi chỉ tải **các file đã đổi** (đổi code ≈ vài chục MB thay vì cả gói), tự thay
+  và khởi động lại. Cũng có menu tray "Kiểm tra cập nhật".
 
 ## Cài đặt
 

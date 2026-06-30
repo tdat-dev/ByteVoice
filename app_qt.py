@@ -31,6 +31,10 @@ except Exception:
     pass
 
 import ctypes.wintypes
+import threading
+
+from version import __version__
+import updater
 
 from PySide6.QtCore import (
     Qt, QTimer, QRectF, QByteArray, QObject, Signal, QFileInfo, QSize,
@@ -95,6 +99,14 @@ class Bridge(QObject):
     sig = Signal(str, object)
 
 
+class UpdateSignals(QObject):
+    """Đưa kết quả check/tải cập nhật (thread nền) về GUI thread."""
+    available = Signal(object)     # info dict {version, manifest_url, html_url}
+    progress = Signal(int, str)    # phần trăm, path đang tải
+    done = Signal()
+    failed = Signal(str)           # thông điệp lỗi ("__uptodate__" = đã mới nhất)
+
+
 class Pill(QWidget):
     def __init__(self, engine):
         super().__init__()
@@ -138,6 +150,16 @@ class Pill(QWidget):
         self.detect_timer.timeout.connect(self._detect_foreground_icon)
         self.detect_timer.start(500)
 
+        # Auto-update: chỉ khi chạy bản đóng gói (frozen). Check nền lúc khởi động.
+        self._update_info = None
+        self._usig = UpdateSignals()
+        self._usig.available.connect(self._on_update_available)
+        self._usig.progress.connect(self._on_update_progress)
+        self._usig.done.connect(self._on_update_done)
+        self._usig.failed.connect(self._on_update_failed)
+        if updater.is_frozen():
+            threading.Thread(target=self._check_updates_bg, daemon=True).start()
+
     # ---------------- vị trí ----------------
     def _place_bottom_center(self):
         g = QGuiApplication.primaryScreen().availableGeometry()
@@ -167,14 +189,25 @@ class Pill(QWidget):
 
     def _build_tray(self):
         self.menu = QMenu()
+        header = self.menu.addAction(f"Sottra v{__version__}")
+        header.setEnabled(False)
+        self.menu.addSeparator()
         self.menu.addAction("Bật / tắt nói", self.engine.toggle)
         self.menu.addAction("Hiện pill", self.show)
+        self.menu.addSeparator()
+        # Mục "Cập nhật lên vX…" ẩn cho tới khi phát hiện bản mới.
+        self.update_action = self.menu.addAction("Cập nhật…", self._do_update)
+        self.update_action.setVisible(False)
+        self.check_action = self.menu.addAction("Kiểm tra cập nhật", self._manual_check)
+        if not updater.is_frozen():
+            self.check_action.setVisible(False)   # dev mode: không có gì để thay
         self.menu.addSeparator()
         self.menu.addAction("Thoát", self._quit)
         self.tray = QSystemTrayIcon(self._make_icon(), self)
         self.tray.setToolTip("Sottra — voice to text")
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._tray_clicked)
+        self.tray.messageClicked.connect(self._on_balloon_clicked)
         self.tray.show()
 
     def _tray_clicked(self, reason):
@@ -188,6 +221,77 @@ class Pill(QWidget):
             pass
         self.tray.hide()
         QApplication.quit()
+
+    # ---------------- auto-update ----------------
+    def _notify(self, msg, ms=6000):
+        self.tray.showMessage("Sottra", msg,
+                              QSystemTrayIcon.MessageIcon.Information, ms)
+
+    def _check_updates_bg(self):
+        info = updater.check_latest()
+        if info:
+            self._usig.available.emit(info)
+
+    def _manual_check(self):
+        self._notify("Đang kiểm tra cập nhật…", 2500)
+
+        def work():
+            info = updater.check_latest()
+            if info:
+                self._usig.available.emit(info)
+            else:
+                self._usig.failed.emit("__uptodate__")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_available(self, info):
+        self._update_info = info
+        self.update_action.setText(f"Cập nhật lên v{info['version']}…")
+        self.update_action.setVisible(True)
+        self._notify(f"Có bản mới v{info['version']} — bấm để cập nhật.")
+
+    def _on_balloon_clicked(self):
+        if self._update_info:
+            self._do_update()
+
+    def _do_update(self):
+        if not self._update_info:
+            return
+        self.update_action.setEnabled(False)
+        self._notify("Bắt đầu tải bản cập nhật…", 2500)
+        threading.Thread(target=self._run_update, daemon=True).start()
+
+    def _run_update(self):
+        try:
+            manifest = updater._get_json(self._update_info["manifest_url"])
+            staging, _delete = updater.stage_update(
+                manifest,
+                progress_cb=lambda p, rel: self._usig.progress.emit(p, rel),
+            )
+            updater.write_helper_and_spawn(staging)
+            self._usig.done.emit()
+        except Exception as e:
+            self._usig.failed.emit(str(e))
+
+    def _on_update_progress(self, pct, rel):
+        self.tray.setToolTip(f"Sottra — đang tải cập nhật… {pct}%")
+
+    def _on_update_done(self):
+        self._notify("Đã tải xong — đang khởi động lại để cập nhật…", 3000)
+        self._quit()
+
+    def _on_update_failed(self, msg):
+        if msg == "__uptodate__":
+            self._notify("Bạn đang dùng bản mới nhất.", 3000)
+            return
+        self.update_action.setEnabled(True)
+        self.tray.setToolTip("Sottra — voice to text")
+        if self._update_info:
+            self._notify(f"Cập nhật lỗi: {msg}. Mở trang tải…", 6000)
+            try:
+                import webbrowser
+                webbrowser.open(self._update_info.get("html_url", ""))
+            except Exception:
+                pass
 
     # ---------------- icon app đang focus ----------------
     def _detect_foreground_icon(self):
