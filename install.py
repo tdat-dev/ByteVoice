@@ -64,6 +64,20 @@ def _start_menu_dir():
 
 
 def _desktop_dir():
+    """Desktop thật — đọc registry Shell Folders để bắt cả trường hợp OneDrive
+    chuyển hướng (%USERPROFILE%\\Desktop có thể KHÔNG tồn tại)."""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+        ) as k:
+            val, _ = winreg.QueryValueEx(k, "Desktop")
+        val = os.path.expandvars(val)
+        if os.path.isdir(val):
+            return val
+    except Exception:
+        pass
     return os.path.join(os.path.expanduser("~"), "Desktop")
 
 
