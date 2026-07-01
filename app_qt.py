@@ -13,6 +13,7 @@ Chạy:
 import sys
 import os
 import math
+import time
 import ctypes
 import tempfile
 import traceback
@@ -37,11 +38,11 @@ from version import __version__
 import updater
 
 from PySide6.QtCore import (
-    Qt, QTimer, QRectF, QByteArray, QObject, Signal, QFileInfo, QSize,
+    Qt, QTimer, QRect, QRectF, QByteArray, QObject, Signal, QFileInfo, QSize,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QLinearGradient, QPainterPath, QPen, QPixmap, QIcon,
-    QGuiApplication,
+    QGuiApplication, QRegion, QFont,
 )
 from PySide6.QtWidgets import (
     QApplication, QWidget, QSystemTrayIcon, QMenu, QFileIconProvider,
@@ -51,16 +52,25 @@ from PySide6.QtSvg import QSvgRenderer
 from engine import SttEngine
 
 # ---------- hằng số thiết kế ----------
-WIN_W, WIN_H = 184, 52
-MARGIN = 6                       # lề trong suốt quanh pill
-ICON_PX = 18                     # cạnh icon (mic / app) vẽ trên pill, đơn vị logical
-N = 17                           # số thanh sóng
-MIN_H, MAX_H = 2.0, 22.0
-G1 = QColor(0xF6, 0xC4, 0x55)    # vàng sáng
-G2 = QColor(0xE0, 0xA0, 0x30)    # vàng đậm
-MUTED = QColor(0x8A, 0x8A, 0x93)
+# Canvas trong suốt cố định; capsule tự nở/thu bên trong (không resize cửa sổ -> không giật).
+# Lúc rảnh = chấm tròn tí hon (gọn). Lúc thu âm = pill dài có sóng âm + đồng hồ (dễ nhận ra).
+WIN_W, WIN_H = 208, 54            # đủ chỗ pill nở hết cỡ + quầng sáng
+CAP_H = 38                       # cao capsule = đường kính chấm lúc nghỉ
+DOT_W = CAP_H                    # rộng lúc nghỉ (chấm tròn)
+PILL_W = 182                     # rộng lúc thu âm / đang chép
+WAVE_N = 15                      # số cột sóng âm
+MARGIN = 4
+ICON_PX = 16                     # cạnh icon (mic / app) vẽ trong chấm, đơn vị logical
+AMBER = QColor(0xF6, 0xC4, 0x55)  # màu thương hiệu chủ đạo
+G1 = QColor(0xF6, 0xC4, 0x55)    # amber sáng
+G2 = QColor(0xE0, 0xA0, 0x30)    # amber đậm
 BG_TOP = QColor(0x17, 0x17, 0x1F)
 BG_BOT = QColor(0x0C, 0x0C, 0x11)
+
+
+def _amber(a):
+    """QColor amber với alpha (0..255) — gọn khi vẽ nhiều lớp."""
+    return QColor(0xF6, 0xC4, 0x55, max(0, min(255, int(a))))
 
 MIC_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
@@ -116,9 +126,14 @@ class Pill(QWidget):
         self.smooth = 0.0
         self.t = 0.0
         self.spin = 0.0
-        self.bars = [MIN_H] * N
-        self.env = [math.sin(math.pi * (i + 0.5) / N) for i in range(N)]
         self._moved = False
+
+        # Nở/thu: 0 = chấm, 1 = pill dài. Sóng âm cuộn theo mức âm gần đây.
+        self.open = 0.0
+        self.open_target = 0.0
+        self.wave = [0.0] * WAVE_N
+        self._rec_start = 0.0
+        self._last_w = -1.0
 
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
@@ -160,10 +175,17 @@ class Pill(QWidget):
         if updater.is_frozen():
             threading.Thread(target=self._check_updates_bg, daemon=True).start()
 
+        # Lần đầu chưa có Groq key -> nhắc (app cloud-only, cần key mới nói được)
+        if not self.engine.groq_api_key:
+            QTimer.singleShot(1500, lambda: self._notify(
+                "Cần Groq API key (miễn phí ở console.groq.com). "
+                "Chuột phải icon khay → Nhập Groq API key.", 8000))
+
     # ---------------- vị trí ----------------
     def _place_bottom_center(self):
         g = QGuiApplication.primaryScreen().availableGeometry()
-        self.move(g.center().x() - WIN_W // 2, g.bottom() - WIN_H - 80)
+        self.move(g.center().x() - WIN_W // 2, g.bottom() - WIN_H - 64)
+        self._sync_mask(force=True)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -195,6 +217,12 @@ class Pill(QWidget):
         self.menu.addAction("Bật / tắt nói", self.engine.toggle)
         self.menu.addAction("Hiện pill", self.show)
         self.menu.addSeparator()
+
+        # Nhận dạng qua Groq (đám mây) -> cần API key (miễn phí ở console.groq.com)
+        self.key_action = self.menu.addAction("Nhập Groq API key…", self._enter_groq_key)
+        self._refresh_key_action()
+        self.menu.addSeparator()
+
         # Mục "Cập nhật lên vX…" ẩn cho tới khi phát hiện bản mới.
         self.update_action = self.menu.addAction("Cập nhật…", self._do_update)
         self.update_action.setVisible(False)
@@ -213,6 +241,25 @@ class Pill(QWidget):
     def _tray_clicked(self, reason):
         if reason == QSystemTrayIcon.Trigger:      # click trái tray -> bật/tắt nói
             self.engine.toggle()
+
+    # ---------------- Groq API key ----------------
+    def _refresh_key_action(self):
+        has = bool(self.engine.groq_api_key)
+        self.key_action.setText(
+            "Đổi Groq API key…" if has else "Nhập Groq API key…  (cần thiết)")
+
+    def _enter_groq_key(self):
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+        key, ok = QInputDialog.getText(
+            None, "Groq API key",
+            "Dán API key (miễn phí ở console.groq.com):",
+            QLineEdit.Normal, self.engine.groq_api_key)
+        if not ok:
+            return
+        self.engine.set_groq_key(key)
+        self._refresh_key_action()
+        if self.engine.groq_api_key:
+            self._notify("Đã lưu Groq API key.", 2500)
 
     def _quit(self):
         try:
@@ -326,6 +373,7 @@ class Pill(QWidget):
                 return                                  # chưa đổi app -> khỏi truy vấn icon
             self._cur_exe = path
             self.app_icon = self._icon_for(path)
+            self.update()        # repaint 1 lần để đổi icon kể cả khi timer đã dừng (idle)
         except Exception:
             pass
 
@@ -354,105 +402,205 @@ class Pill(QWidget):
     # ---------------- sự kiện engine ----------------
     def on_event(self, ev, pl):
         if ev == "model":
-            if pl == "loading":
+            # Không đè recording/transcribing khi model nạp lại nền sau lúc nhả VRAM
+            if pl == "loading" and self.state not in ("recording", "transcribing"):
                 self.state = "loading"
+                self.open_target = 0.0
+                self._ensure_animating()
+            elif pl == "ready" and self.state == "loading":
+                self.state = "idle"
+                self.open_target = 0.0
+                self._ensure_animating()
         elif ev == "state":
             self.state = pl
+            if pl == "recording":
+                self._rec_start = time.monotonic()
+                self.wave = [0.0] * WAVE_N          # sóng bắt đầu phẳng
+                self.open_target = 1.0              # nở thành pill -> rõ "đang nghe"
+            elif pl == "transcribing":
+                self.open_target = 1.0              # giữ pill -> rõ "đang chép"
+            else:                                   # idle -> thu về chấm
+                self.open_target = 0.0
+            self._ensure_animating()
         elif ev == "level":
             self.level = float(pl)
         # device/result/error: không hiển thị (chữ đã được gõ ra)
 
+    def _ensure_animating(self):
+        """Bật lại vòng vẽ 30fps khi có hoạt động (lúc rảnh _tick tự dừng timer)."""
+        if not self.timer.isActive():
+            self.timer.start(33)
+
     # ---------------- animation ----------------
     def _tick(self):
         self.t += 0.08
-        self.smooth += (self.level - self.smooth) * 0.4
-        self.spin = (self.spin + 12) % 360
-        for i in range(N):
-            if self.state == "recording":
-                n = 0.5 + 0.5 * abs(math.sin(self.t * 1.7 + i * 0.9)
-                                    + 0.5 * math.sin(self.t * 2.9 + i * 1.7)) / 1.5
-                target = MIN_H + self.smooth * (MAX_H - MIN_H) * self.env[i] * min(1.0, n)
-            elif self.state == "transcribing":
-                w = 0.5 + 0.5 * math.sin(self.t * 3 - i * 0.5)
-                target = MIN_H + self.env[i] * 3 + w * 6
-            else:
-                target = MIN_H
-            self.bars[i] += (target - self.bars[i]) * 0.45
+        self.smooth += (self.level - self.smooth) * 0.4    # mức âm mượt
+        self.spin = (self.spin + 12) % 360                 # góc spinner
+        self.open += (self.open_target - self.open) * 0.30  # nở/thu mượt
+        if abs(self.open_target - self.open) < 0.002:
+            self.open = self.open_target
+        # Đẩy 1 mẫu sóng mỗi khung khi đang thu -> dải cột cuộn như máy đo giọng
+        if self.state == "recording":
+            self.wave.append(min(1.0, self.smooth))
+            self.wave.pop(0)
+        self._sync_mask()                                  # cập nhật vùng bắt chuột theo bề rộng
         self.update()
+        # Rảnh + đã thu về chấm + viền lặng -> dừng vẽ (khỏi composite GPU 30fps nền liên tục).
+        # Khi recording/transcribing trở lại, on_event gọi _ensure_animating() bật lại.
+        if (self.state not in ("recording", "transcribing")
+                and self.open < 0.01 and self.smooth < 0.01):
+            self.open = 0.0
+            self.timer.stop()
 
-    # ---------------- vẽ ----------------
+    # ---------------- hình học capsule + mặt nạ chuột ----------------
+    def _capsule_w(self):
+        """Bề rộng capsule hiện tại (px). easeOutCubic: nở dứt khoát, thu mượt."""
+        e = max(0.0, min(1.0, self.open))
+        e = 1.0 - (1.0 - e) ** 3
+        return DOT_W + (PILL_W - DOT_W) * e
+
+    def _sync_mask(self, force=False):
+        """Chỉ để capsule (không phải cả canvas trong suốt) bắt chuột -> phần còn lại
+        cho click xuyên xuống app phía dưới. Cập nhật khi bề rộng đổi."""
+        w = self._capsule_w()
+        if not force and abs(w - self._last_w) < 0.5:
+            return
+        self._last_w = w
+        cy = self.height() / 2.0
+        left = (self.width() - w) / 2.0
+        pad = 8                                            # chừa quầng sáng ngoài viền
+        rect = QRect(
+            int(left - pad), int(cy - CAP_H / 2.0 - pad),
+            int(w + 2 * pad), int(CAP_H + 2 * pad),
+        )
+        self.setMask(QRegion(rect))
+
+    # ---------------- vẽ (chấm nở thành pill sóng âm) ----------------
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        rect = QRectF(MARGIN, MARGIN, self.width() - 2 * MARGIN, self.height() - 2 * MARGIN)
-        radius = rect.height() / 2.0
-        path = QPainterPath()
-        path.addRoundedRect(rect, radius, radius)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
-        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        w = self._capsule_w()
+        cy = self.height() / 2.0
+        left = (self.width() - w) / 2.0
+        rad = CAP_H / 2.0
+        cap = QRectF(left, cy - rad, w, CAP_H)
+        path = QPainterPath()
+        path.addRoundedRect(cap, rad, rad)
+
+        # Nền tối (gradient thương hiệu) + hairline amber luôn có -> "có hồn" lúc đứng yên
+        grad = QLinearGradient(cap.topLeft(), cap.bottomLeft())
         grad.setColorAt(0.0, BG_TOP)
         grad.setColorAt(1.0, BG_BOT)
-        p.fillPath(path, grad)
+        p.setPen(Qt.NoPen)
+        p.setBrush(grad)
+        p.drawPath(path)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(_amber(40), 1.0))
+        p.drawPath(path)
 
-        if self.state == "recording":              # viền amber mảnh bên trong
-            inner = QRectF(rect).adjusted(0.7, 0.7, -0.7, -0.7)
-            ip = QPainterPath()
-            ip.addRoundedRect(inner, radius, radius)
-            p.setPen(QPen(QColor(246, 196, 85, 80), 1.2))
-            p.setBrush(Qt.NoBrush)
-            p.drawPath(ip)
+        # Độ hiện của nội dung bên trong pill (sóng/đồng hồ/chấm nghĩ) theo mức nở
+        content = max(0.0, min(1.0, (self.open - 0.35) / 0.5))
+        icon_cx = left + rad                               # icon trượt về nắp trái khi nở
 
-        cy = rect.center().y()
-        icon = float(ICON_PX)
-        ix = rect.left() + 14
-        # pulse nhẹ khi recording
-        scale = 1.0 + (0.06 * math.sin(self.t * 3) if self.state == "recording" else 0.0)
-        isz = icon * scale
-        icon_rect = QRectF(ix + (icon - isz) / 2, cy - isz / 2, isz, isz)
+        if self.state == "recording":
+            self._paint_record_ring(p, cap, rad)
+            if content > 0.02:
+                self._paint_wave(p, left, w, cy, content)
+                self._paint_timer(p, left, w, cy, content)
+        elif self.state == "transcribing":
+            if content > 0.02:
+                self._paint_thinking(p, left, w, cy, content)
+            else:
+                self._paint_spinner(p, cap, rad)
+        elif self.state == "loading":
+            self._paint_spinner(p, cap, rad)
 
-        if self.state == "transcribing":           # spinner thay mic
-            p.save()
-            p.translate(icon_rect.center())
-            p.rotate(self.spin)
-            pen = QPen(G1, 2.0)
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.setBrush(Qt.NoBrush)
-            p.drawArc(QRectF(-7, -7, 14, 14), 0, 270 * 16)
-            p.restore()
-        elif self.app_icon is not None:            # icon app đang focus
-            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            pm = self.app_icon
-            p.drawPixmap(icon_rect, pm, QRectF(0, 0, pm.width(), pm.height()))
-        else:                                      # fallback: mic
-            self.mic.render(p, icon_rect)
-
-        wx0 = ix + icon + 12
-        wx1 = rect.right() - 14
-        if self.state in ("idle", "loading"):      # đường tĩnh lặng (gradient)
-            lg = QLinearGradient(wx0, 0, wx1, 0)
-            lg.setColorAt(0.0, QColor(246, 196, 85, 0))
-            lg.setColorAt(0.5, QColor(246, 196, 85, 130))
-            lg.setColorAt(1.0, QColor(246, 196, 85, 0))
-            line = QRectF(wx0, cy - 1, wx1 - wx0, 2)
-            lp = QPainterPath()
-            lp.addRoundedRect(line, 1, 1)
-            p.fillPath(lp, lg)
-        else:                                      # sóng
-            gap = 2.0
-            bw = (wx1 - wx0 - gap * (N - 1)) / N
-            for i in range(N):
-                hh = max(MIN_H, self.bars[i])
-                bx = wx0 + i * (bw + gap)
-                br = QRectF(bx, cy - hh / 2, bw, hh)
-                bg = QLinearGradient(0, cy - hh / 2, 0, cy + hh / 2)
-                bg.setColorAt(0.0, G1)
-                bg.setColorAt(1.0, G2)
-                bp = QPainterPath()
-                r = min(bw / 2, 2.0)
-                bp.addRoundedRect(br, r, r)
-                p.fillPath(bp, bg)
+        self._paint_icon(p, icon_cx, cy)
         p.end()
+
+    def _paint_record_ring(self, p, cap, rad):
+        """Viền amber dày/đậm theo mức âm -> phản hồi tức thì khi nói + quầng khi to tiếng."""
+        lvl = min(1.0, self.smooth)
+        alpha = int(120 + 135 * min(1.0, self.smooth * 1.3))
+        width = 1.6 + 2.6 * lvl
+        p.setBrush(Qt.NoBrush)
+        inner = cap.adjusted(width / 2, width / 2, -width / 2, -width / 2)
+        ipath = QPainterPath()
+        ir = max(1.0, rad - width / 2)
+        ipath.addRoundedRect(inner, ir, ir)
+        p.setPen(QPen(_amber(alpha), width))
+        p.drawPath(ipath)
+        if lvl > 0.05:                                     # quầng mờ ngoài
+            p.setPen(QPen(_amber(int(52 * lvl)), width + 3))
+            opath = QPainterPath()
+            opath.addRoundedRect(cap, rad, rad)
+            p.drawPath(opath)
+
+    def _paint_wave(self, p, left, w, cy, a):
+        """Dải cột sóng âm cuộn (giữa icon và đồng hồ) — dấu hiệu 'đang nghe' rõ nhất."""
+        x0 = left + CAP_H + 2                              # sau nắp icon
+        x1 = left + w - 40                                 # trước đồng hồ
+        if x1 - x0 < 10:
+            return
+        n = len(self.wave)
+        step = (x1 - x0) / n
+        bw = min(3.4, step * 0.6)
+        maxh = CAP_H * 0.66
+        p.setPen(Qt.NoPen)
+        p.setBrush(_amber(int(235 * a)))
+        for i, v in enumerate(self.wave):
+            h = 3.0 + max(0.0, min(1.0, v)) * maxh
+            x = x0 + step * i + (step - bw) / 2
+            p.drawRoundedRect(QRectF(x, cy - h / 2, bw, h), bw / 2, bw / 2)
+
+    def _paint_timer(self, p, left, w, cy, a):
+        """Đồng hồ đếm giây bên phải -> thấy nó chạy = biết chắc đang thu, chưa dừng."""
+        secs = max(0, int(time.monotonic() - self._rec_start))
+        txt = f"{secs // 60}:{secs % 60:02d}"
+        f = QFont(); f.setPixelSize(12)
+        p.setFont(f)
+        p.setPen(_amber(int(225 * a)))
+        p.drawText(QRectF(left + w - 40, cy - 9, 32, 18),
+                   Qt.AlignVCenter | Qt.AlignRight, txt)
+
+    def _paint_thinking(self, p, left, w, cy, a):
+        """Ba chấm nảy sóng — 'đang chép chữ', khác hẳn lúc nghe (không có cột sóng)."""
+        x0 = left + CAP_H + 2
+        x1 = left + w - 18
+        mid = (x0 + x1) / 2.0
+        p.setPen(Qt.NoPen)
+        for i in range(3):
+            ph = math.sin(self.t * 3.0 - i * 0.7)
+            off = max(0.0, ph) * 5.0
+            p.setBrush(_amber(int((140 + 95 * max(0.0, ph)) * a)))
+            p.drawEllipse(QRectF(mid - 12 + i * 12 - 3, cy - 3 - off, 6, 6))
+
+    def _paint_spinner(self, p, cap, rad):
+        """Vòng cung xoay quanh chấm — lúc nạp model / bắt đầu chép (khi pill còn nhỏ)."""
+        cx, cy = cap.center().x(), cap.center().y()
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(self.spin)
+        pen = QPen(G1, 2.2)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        rr = rad - 1.8
+        p.drawArc(QRectF(-rr, -rr, 2 * rr, 2 * rr), 0, 270 * 16)
+        p.restore()
+
+    def _paint_icon(self, p, cx, cy):
+        """Icon app đang focus (hoặc mic) — pulse nhẹ khi thu, trượt về nắp trái khi nở."""
+        scale = 1.0 + (0.06 * math.sin(self.t * 3) if self.state == "recording" else 0.0)
+        isz = ICON_PX * scale
+        rect = QRectF(cx - isz / 2, cy - isz / 2, isz, isz)
+        if self.app_icon is not None:
+            pm = self.app_icon
+            p.drawPixmap(rect, pm, QRectF(0, 0, pm.width(), pm.height()))
+        else:
+            self.mic.render(p, rect)
 
     # ---------------- chuột: click=toggle, kéo=di chuyển ----------------
     def mousePressEvent(self, e):

@@ -1,16 +1,14 @@
 # UI (Qt — bản chính: app_qt.py)
 PySide6-Essentials>=6.6
 
-# STT engine
-faster-whisper>=1.0
+# Thu âm + phím tắt + xuất chữ
 sounddevice>=0.4
 numpy>=1.24
 pynput>=1.7
 pyperclip>=1.8
 
-# GPU (Windows, tùy chọn — cần cho device=cuda):
-nvidia-cublas-cu12
-nvidia-cudnn-cu12
+# Nhận dạng: Groq API (đám mây) — gọi bằng urllib stdlib, không cần thư viện thêm.
+# Bản cloud-only: KHÔNG dùng faster-whisper / CUDA nữa.
 
 # (bản cũ pywebview giữ lại làm tham khảo: app.py)
 pywebview>=5.0

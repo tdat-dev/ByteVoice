@@ -20,6 +20,12 @@ import subprocess
 import tempfile
 import zipfile
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from version import __version__          # noqa: E402
@@ -121,7 +127,7 @@ def upload_blobs(to_upload):
 
 
 def make_zip():
-    out = os.path.join(ROOT, "dist", f"Sottra-v{__version__}-win64-gpu.zip")
+    out = os.path.join(ROOT, "dist", f"Sottra-v{__version__}-win64-cloud.zip")
     print(f"  nén {out}…")
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6,
                          allowZip64=True) as z:
@@ -142,7 +148,7 @@ def publish_version(zip_path):
     run(["gh", "release", "create", tag, "--repo", REPO, "--title", f"Sottra {tag}",
          "--notes", notes, "--latest",
          f"{manifest_path}#manifest.json",
-         f"{zip_path}#Sottra {tag} (Windows 64-bit, GPU)"])
+         f"{zip_path}#Sottra {tag} (Windows 64-bit, cloud)"])
 
 
 def main():

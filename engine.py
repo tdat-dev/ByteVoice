@@ -1,16 +1,17 @@
 """
-Sottra — STT engine (offline, local-only)
-=========================================
-Push-to-talk speech-to-text. Giữ phím -> thu âm RAM (16kHz) -> faster-whisper
--> gõ tại con trỏ HOẶC copy clipboard. KHÔNG cloud, KHÔNG LLM API.
+Sottra — STT engine (cloud-only, Groq)
+======================================
+Push-to-talk: giữ/nhấn phím -> thu âm RAM (16kHz) -> gửi lên Groq
+(whisper-large-v3-turbo) -> gõ tại con trỏ HOẶC copy clipboard.
+NHẸ MÁY: KHÔNG chạy model cục bộ, KHÔNG cần GPU/CUDA. Cần internet + Groq key.
 
-Engine tách rời UI: phát sự kiện qua callback `emit(event, payload)`:
-    emit("model",  "loading" | "ready")
+Engine tách rời UI qua callback emit(event, payload):
+    emit("model",  "ready")                 # giữ để tương thích UI (không còn nạp model)
     emit("state",  "idle" | "recording" | "transcribing")
     emit("level",  float 0..1)              # mức âm thanh realtime
     emit("result", {"text": str, "time": "HH:MM"})
     emit("error",  str)
-    emit("device", "CPU·int8" | "GPU·float16")
+    emit("device", "Groq·turbo")
 """
 
 import sys
@@ -21,6 +22,8 @@ import threading
 import numpy as np
 import sounddevice as sd
 from pynput import keyboard
+
+import config
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -40,6 +43,7 @@ def _is_hallucination(text):
     if len(t) > 90:                      # câu dài thì coi như nói thật, cho qua
         return False
     return any(p in t for p in _HALLUC_PHRASES)
+
 
 # Tên hotkey người dùng chọn -> pynput Key
 HOTKEYS = {
@@ -71,110 +75,46 @@ HOTKEY_ALIASES = {
 }
 
 
-_CUDA_DLL_HANDLES = []   # giữ tham chiếu các handle add_dll_directory (đừng để GC)
-
-
-def _enable_cuda_dlls():
-    """Nạp DLL cuBLAS/cuDNN từ các wheel nvidia-*-cu12 vào DLL search path
-    (ctranslate2 cần cublas64_12.dll + cudnn lúc chạy GPU trên Windows).
-    Không dùng `import nvidia` vì đó là namespace package (import hay lỗi)."""
-    import os, sys, glob, site
-    dirs = []
-    if getattr(sys, "frozen", False):        # PyInstaller bundle: DLL nằm trong _MEIPASS / cạnh exe
-        dirs.append(getattr(sys, "_MEIPASS", ""))
-        dirs.append(os.path.dirname(sys.executable))
-    roots = [os.path.join(sys.prefix, "Lib", "site-packages")]
-    try:
-        roots += list(site.getsitepackages())
-        roots.append(site.getusersitepackages())
-    except Exception:
-        pass
-    for sp in roots:                          # dev: DLL trong wheel nvidia/*/bin
-        dirs += glob.glob(os.path.join(sp, "nvidia", "*", "bin"))
-    n = 0
-    for d in dict.fromkeys(dirs):
-        if d and os.path.isdir(d):
-            # PATH là cơ chế ctranslate2 thực sự dùng để tìm cublas64_12.dll
-            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
-            try:
-                _CUDA_DLL_HANDLES.append(os.add_dll_directory(d))
-            except Exception:
-                pass
-            n += 1
-    print(f"[cuda] PATH += {n} thư mục DLL", file=sys.stderr, flush=True)
-
-
-# QUAN TRỌNG: chạy NGAY lúc import module, TRƯỚC mọi `import ctranslate2`
-# (detect_device/faster_whisper import nó). add_dll_directory phải có hiệu lực
-# trước khi backend CUDA của ctranslate2 được nạp, nếu không cublas vẫn không thấy.
-_enable_cuda_dlls()
-
-
-def detect_device():
-    """Ưu tiên GPU (CUDA) cho tốc độ dịch ~0.5s; không có GPU thì về CPU int8.
-    Ép CPU bằng biến môi trường SOTTRA_DEVICE=cpu."""
-    import os
-    if os.environ.get("SOTTRA_DEVICE", "").lower() != "cpu":
-        try:
-            from ctranslate2 import get_cuda_device_count
-            if get_cuda_device_count() > 0:
-                # int8_float16: nhẹ VRAM hơn + nhanh hơn float16, giữ độ chính xác
-                return "cuda", "int8_float16", "GPU·int8"
-        except Exception:
-            pass
-    return "cpu", "int8", "CPU·int8"
-
-
 class SttEngine:
     def __init__(self, emit):
         self.emit = emit
         self.audio_queue = queue.Queue()
         self.stream = None
         self.recording = False
-        self.model = None
         self.kb = keyboard.Controller()
         self._listener = None
 
         # Cấu hình runtime (UI có thể đổi)
-        self.model_size = "large-v3"
         self.language = "vi"
         self.output_mode = "type"        # "type" | "clipboard"
         self.hotkey_name = "alt_r"
         self.hotkey_keys = HOTKEY_ALIASES[self.hotkey_name]
         self._hotkey_down = False        # chống auto-repeat: chỉ toggle ở lần nhấn đầu
 
+        # Groq (đám mây)
+        _c = config.load()
+        self.groq_api_key = _c["groq_api_key"]
+        self.groq_model = _c["groq_model"]
+        self.groq_prompt = _c["groq_prompt"]
+
         self._cur_level = 0.0
         self._pump = None
         self._pump_stop = threading.Event()
+        self._transcribing = False
 
     # ----------------------- Vòng đời -----------------------
     def start(self):
-        """Load model (thread riêng) rồi bật global listener."""
-        threading.Thread(target=self._load_model, daemon=True).start()
+        """Bật global listener. Cloud-only -> báo UI sẵn sàng ngay (không nạp model)."""
+        self.emit("device", self._label())
+        self.emit("model", "ready")
+        self.emit("state", "idle")
         self._listener = keyboard.Listener(
             on_press=self._on_press, on_release=self._on_release
         )
         self._listener.start()
 
-    def _load_model(self):
-        self.emit("model", "loading")
-        device, compute_type, label = detect_device()
-        self.emit("device", label)
-        try:
-            from faster_whisper import WhisperModel
-            self.model = WhisperModel(
-                self.model_size, device=device, compute_type=compute_type
-            )
-            # Warmup: dịch dummy 1 lần để GPU nóng kernel -> câu thật đầu không chậm
-            list(self.model.transcribe(
-                np.zeros(16000, dtype=np.float32),
-                language=self.language, beam_size=1,
-            )[0])
-        except Exception as e:
-            self.emit("error", f"Không tải được mô hình: {e}")
-            return
-        self.emit("model", "ready")
-        self.emit("state", "idle")
+    def _label(self):
+        return "Groq·" + self.groq_model.replace("whisper-", "").replace("-v3", "")
 
     def shutdown(self):
         if self._listener is not None:
@@ -191,18 +131,19 @@ class SttEngine:
             self.hotkey_name = name
             self.hotkey_keys = HOTKEY_ALIASES[name]
 
-    def reload_model(self, model_size):
-        """Đổi kích thước model -> nạp lại."""
-        self.model_size = model_size
-        self.model = None
-        threading.Thread(target=self._load_model, daemon=True).start()
+    def set_groq_key(self, key):
+        """Lưu Groq API key (rỗng = xoá)."""
+        self.groq_api_key = (key or "").strip()
+        cfg = config.load()
+        cfg["groq_api_key"] = self.groq_api_key
+        config.save(cfg)
 
     # ----------------------- Thu âm (RAM) -----------------------
     def _audio_callback(self, indata, frames, time_info, status):
         if status:
             print(f"[Audio] {status}", file=sys.stderr)
         self.audio_queue.put(indata.copy())
-        # Chỉ tính mức âm thanh, KHÔNG gọi evaluate_js ở đây (tránh nghẽn audio)
+        # Chỉ tính mức âm thanh cho UI (không gọi gì nặng ở đây -> tránh nghẽn audio)
         rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
         self._cur_level = min(1.0, rms * 9.0)
 
@@ -213,7 +154,7 @@ class SttEngine:
             time.sleep(0.045)
 
     def _start_recording(self):
-        if self.recording or self.model is None:
+        if self.recording:
             return
         # Xoá queue TRƯỚC khi start, nếu không sẽ vứt mất block âm thanh đầu (mất chữ đầu)
         with self.audio_queue.mutex:
@@ -272,9 +213,9 @@ class SttEngine:
                 print(f"[Stream] {e}", file=sys.stderr)
             self.stream = None
 
-    # ------------------- Dịch + xuất chữ -------------------
+    # ------------------- Dịch (Groq) + xuất chữ -------------------
     def _transcribe_and_emit(self, audio):
-        # Bỏ qua clip gần như im lặng / chỉ có tiếng thở -> tránh Whisper ảo giác
+        # Bỏ qua clip gần như im lặng / chỉ có tiếng thở -> khỏi tốn quota + tránh ảo giác
         peak = float(np.max(np.abs(audio)))
         rms = float(np.sqrt(np.mean(audio ** 2)))
         dur = audio.shape[0] / SAMPLE_RATE
@@ -284,34 +225,24 @@ class SttEngine:
             print("[audio] -> SKIP (im lặng)", file=sys.stderr, flush=True)
             self.emit("state", "idle")
             return
+
+        if not self.groq_api_key:
+            self.emit("error", "Chưa có Groq API key — vào menu khay để nhập")
+            self.emit("state", "idle")
+            return
+
         self.emit("state", "transcribing")
-        # Khử ồn nền — TẮT để test (noisereduce có thể làm méo giọng -> sai chữ)
-        if getattr(self, "denoise", False):
-            try:
-                import noisereduce as nr
-                audio = nr.reduce_noise(
-                    y=audio, sr=SAMPLE_RATE, stationary=False, prop_decrease=0.75
-                ).astype(np.float32)
-            except Exception as e:
-                print(f"[nr] bỏ qua khử ồn: {e}", file=sys.stderr, flush=True)
+        self._transcribing = True
+        text = ""
         try:
-            segments, _ = self.model.transcribe(
-                audio, language=self.language,
-                beam_size=1,
-                temperature=0,                     # tắt fallback nhiệt -> bớt ảo giác
-                condition_on_previous_text=False,
-                no_speech_threshold=0.6,
-                log_prob_threshold=-1.0,
-                compression_ratio_threshold=2.4,   # loại đoạn lặp lại (dấu hiệu ảo giác)
-                vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=300, speech_pad_ms=300),
-            )
-            text = "".join(seg.text for seg in segments).strip()
+            text = self._transcribe_groq(audio)
         except Exception as e:
-            self.emit("error", f"Lỗi nhận dạng: {e}")
+            print(f"[groq] lỗi: {e}", file=sys.stderr, flush=True)
+            self.emit("error", f"Groq lỗi: {e}")
             self.emit("state", "idle")
             return
         finally:
+            self._transcribing = False
             del audio                              # giải phóng âm thanh khỏi RAM ngay
 
         halluc = _is_hallucination(text)
@@ -323,6 +254,69 @@ class SttEngine:
         self._deliver(text)
         self.emit("result", {"text": text, "time": time.strftime("%H:%M")})
         self.emit("state", "idle")
+
+    def _transcribe_groq(self, audio):
+        """Gửi audio lên Groq (OpenAI-compatible) -> text. Raise nếu lỗi mạng/API.
+
+        Dùng stdlib (urllib + wave) để chạy được cả trong bản đóng gói PyInstaller
+        mà không cần thêm phụ thuộc (requests/httpx/groq SDK)."""
+        import io
+        import wave
+        import json as _json
+        import uuid
+        import urllib.request
+
+        # float32 [-1,1] -> WAV PCM 16-bit mono 16kHz
+        pcm = np.clip(audio, -1.0, 1.0)
+        pcm16 = (pcm * 32767.0).astype("<i2").tobytes()
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            w.writeframes(pcm16)
+        wav_bytes = buf.getvalue()
+
+        boundary = "----SottraBoundary" + uuid.uuid4().hex
+
+        def _field(name, value):
+            return (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode("utf-8")
+
+        body = b""
+        body += _field("model", self.groq_model)
+        if self.language:
+            body += _field("language", self.language)
+        body += _field("temperature", "0")
+        body += _field("response_format", "json")
+        if self.groq_prompt:
+            body += _field("prompt", self.groq_prompt)
+        body += (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+            "Content-Type: audio/wav\r\n\r\n"
+        ).encode("utf-8")
+        body += wav_bytes + b"\r\n"
+        body += f"--{boundary}--\r\n".encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.groq_api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                # Cloudflare của Groq chặn UA mặc định "Python-urllib" (lỗi 1010) -> đặt UA riêng
+                "User-Agent": "Sottra/1.0",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        return (data.get("text") or "").strip()
 
     def _deliver(self, text):
         """Gõ tại con trỏ, hoặc copy clipboard, tuỳ output_mode."""
@@ -341,8 +335,6 @@ class SttEngine:
     # ------------------- Hotkey -------------------
     def toggle(self):
         """Bật/tắt thu âm — dùng cho cả phím tắt lẫn nút mic."""
-        if self.model is None:
-            return
         if self.recording:
             self._stop_recording()
         else:
