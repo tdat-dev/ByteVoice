@@ -103,7 +103,7 @@ class SttEngine:
         self._listener = None
 
         # Cấu hình runtime (UI có thể đổi)
-        self.language = "vi"
+        self.language = "auto"           # đọc lại từ config bên dưới
         self.output_mode = "type"        # "type" | "clipboard"
         self.hotkey_name = "alt_r"
         self.hotkey_keys = HOTKEY_ALIASES[self.hotkey_name]
@@ -111,6 +111,7 @@ class SttEngine:
 
         # Groq (đám mây)
         _c = config.load()
+        self.language = _c["language"]
         self.groq_api_key = _c["groq_api_key"]
         self.groq_model = _c["groq_model"]
         self.groq_prompt = _c["groq_prompt"]
@@ -150,6 +151,14 @@ class SttEngine:
         if name in HOTKEY_ALIASES:
             self.hotkey_name = name
             self.hotkey_keys = HOTKEY_ALIASES[name]
+
+    def set_language(self, lang):
+        """Đổi ngôn ngữ nhận dạng: 'auto' (Việt+Anh) | 'vi' | 'en'."""
+        if lang in ("auto", "vi", "en"):
+            self.language = lang
+            cfg = config.load()
+            cfg["language"] = lang
+            config.save(cfg)
 
     def set_groq_key(self, key):
         """Lưu Groq API key (rỗng = xoá)."""
@@ -268,9 +277,9 @@ class SttEngine:
 
         self.emit("state", "transcribing")
         self._transcribing = True
-        text = ""
+        text, lang = "", ""
         try:
-            text = self._transcribe_groq(audio)
+            text, lang = self._transcribe_groq(audio)
         except Exception as e:
             print(f"[groq] lỗi: {e}", file=sys.stderr, flush=True)
             self.emit("error", f"Groq lỗi: {e}")
@@ -281,12 +290,15 @@ class SttEngine:
             del audio                              # giải phóng âm thanh khỏi RAM ngay
 
         halluc = _is_hallucination(text)
-        print(f"[stt] text={text!r} halluc={halluc}", file=sys.stderr, flush=True)
+        print(f"[stt] lang={lang!r} text={text!r} halluc={halluc}",
+              file=sys.stderr, flush=True)
         if not text or halluc:
             self.emit("state", "idle")
             return
 
-        if self.refine:                        # LLM dọn dấu/chính tả (giữ "transcribing")
+        # Dọn dấu bằng LLM CHỈ cho tiếng Việt (prompt tiếng Việt sẽ phá text tiếng Anh)
+        is_vi = lang.startswith("vi") or self.language == "vi"
+        if self.refine and is_vi:              # giữ trạng thái "transcribing" lúc dọn
             text = self._refine_text(text)
 
         self._deliver(text)
@@ -326,10 +338,10 @@ class SttEngine:
 
         body = b""
         body += _field("model", self.groq_model)
-        if self.language:
+        if self.language and self.language != "auto":   # auto -> để Whisper tự nhận ngôn ngữ
             body += _field("language", self.language)
         body += _field("temperature", "0")
-        body += _field("response_format", "json")
+        body += _field("response_format", "verbose_json")   # kèm ngôn ngữ đã nhận
         if self.groq_prompt:
             body += _field("prompt", self.groq_prompt)
         body += (
@@ -354,7 +366,9 @@ class SttEngine:
         )
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = _json.loads(resp.read().decode("utf-8"))
-        return (data.get("text") or "").strip()
+        text = (data.get("text") or "").strip()
+        lang = (data.get("language") or "").lower()   # vd "vietnamese" / "english"
+        return text, lang
 
     def _refine_text(self, text):
         """Nhờ LLM Groq dọn dấu/chính tả tiếng Việt. MỌI lỗi -> trả text gốc

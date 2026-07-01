@@ -13,6 +13,7 @@ import threading
 _LOCK = threading.Lock()
 
 DEFAULTS = {
+    "language": "auto",                       # "auto" (Việt+Anh) | "vi" | "en"
     "groq_api_key": "",
     "groq_model": "whisper-large-v3",         # chuẩn hơn cho tiếng Việt (turbo nhanh nhưng kém dấu)
     "groq_prompt": "",                        # gợi ý từ vựng/tên riêng để chép đúng hơn

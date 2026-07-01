@@ -234,6 +234,18 @@ class Pill(QWidget):
         self.menu.addAction("Hiện pill", self.show)
         self.menu.addSeparator()
 
+        # Ngôn ngữ: Tự động (mọi ngôn ngữ) / khoá Tiếng Việt / khoá English
+        lang = self.menu.addMenu("Ngôn ngữ")
+        self.act_lang_auto = lang.addAction(
+            "Tự động · mọi ngôn ngữ", lambda: self._set_language("auto"))
+        self.act_lang_vi = lang.addAction(
+            "Tiếng Việt", lambda: self._set_language("vi"))
+        self.act_lang_en = lang.addAction(
+            "English", lambda: self._set_language("en"))
+        for a in (self.act_lang_auto, self.act_lang_vi, self.act_lang_en):
+            a.setCheckable(True)
+        self._refresh_lang_menu()
+
         # Chất lượng nhận dạng: large-v3 (chuẩn hơn) hoặc turbo (nhanh hơn)
         q = self.menu.addMenu("Chất lượng nhận dạng")
         self.act_accurate = q.addAction(
@@ -283,6 +295,20 @@ class Pill(QWidget):
     def _tray_clicked(self, reason):
         if reason == QSystemTrayIcon.Trigger:      # click trái tray -> bật/tắt nói
             self.engine.toggle()
+
+    # ---------------- ngôn ngữ ----------------
+    def _refresh_lang_menu(self):
+        l = self.engine.language
+        self.act_lang_auto.setChecked(l == "auto")
+        self.act_lang_vi.setChecked(l == "vi")
+        self.act_lang_en.setChecked(l == "en")
+
+    def _set_language(self, lang):
+        self.engine.set_language(lang)
+        self._refresh_lang_menu()
+        label = {"auto": "Tự động (mọi ngôn ngữ)", "vi": "Tiếng Việt",
+                 "en": "English"}[lang]
+        self._notify("Ngôn ngữ: " + label, 2500)
 
     # ---------------- chất lượng nhận dạng (model Groq) ----------------
     def _refresh_model_menu(self):
