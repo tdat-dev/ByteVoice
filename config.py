@@ -16,6 +16,7 @@ DEFAULTS = {
     "groq_api_key": "",
     "groq_model": "whisper-large-v3-turbo",   # nhanh + chuẩn, free tier console.groq.com
     "groq_prompt": "",                        # gợi ý từ vựng/tên riêng để chép đúng hơn
+    "installed": False,                       # đã tạo lối tắt + bật startup lần đầu chưa
 }
 
 

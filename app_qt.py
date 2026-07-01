@@ -36,6 +36,8 @@ import threading
 
 from version import __version__
 import updater
+import install
+import config
 
 from PySide6.QtCore import (
     Qt, QTimer, QRect, QRectF, QByteArray, QObject, Signal, QFileInfo, QSize,
@@ -175,6 +177,20 @@ class Pill(QWidget):
         if updater.is_frozen():
             threading.Thread(target=self._check_updates_bg, daemon=True).start()
 
+        # Lần đầu (bản đóng gói): tạo lối tắt + bật chạy cùng Windows -> khỏi vào folder.
+        if install.is_frozen():
+            cfg = config.load()
+            if not cfg.get("installed"):
+                made = install.create_shortcuts()
+                install.set_startup(True)
+                if hasattr(self, "startup_action"):
+                    self.startup_action.setChecked(install.startup_enabled())
+                cfg["installed"] = True
+                config.save(cfg)
+                QTimer.singleShot(1800, lambda: self._notify(
+                    f"Đã tạo {len(made)} lối tắt & bật khởi động cùng Windows. "
+                    "Tắt trong menu khay nếu không muốn.", 7000))
+
         # Lần đầu chưa có Groq key -> nhắc (app cloud-only, cần key mới nói được)
         if not self.engine.groq_api_key:
             QTimer.singleShot(1500, lambda: self._notify(
@@ -223,6 +239,16 @@ class Pill(QWidget):
         self._refresh_key_action()
         self.menu.addSeparator()
 
+        # Tích hợp Windows (chỉ ở bản đóng gói): startup + lối tắt
+        if install.is_frozen():
+            self.startup_action = self.menu.addAction(
+                "Khởi động cùng Windows", self._toggle_startup)
+            self.startup_action.setCheckable(True)
+            self.startup_action.setChecked(install.startup_enabled())
+            self.menu.addAction("Tạo lối tắt (Start Menu + Desktop)",
+                                self._make_shortcuts)
+            self.menu.addSeparator()
+
         # Mục "Cập nhật lên vX…" ẩn cho tới khi phát hiện bản mới.
         self.update_action = self.menu.addAction("Cập nhật…", self._do_update)
         self.update_action.setVisible(False)
@@ -247,6 +273,21 @@ class Pill(QWidget):
         has = bool(self.engine.groq_api_key)
         self.key_action.setText(
             "Đổi Groq API key…" if has else "Nhập Groq API key…  (cần thiết)")
+
+    # ---------------- tích hợp Windows ----------------
+    def _toggle_startup(self):
+        on = self.startup_action.isChecked()
+        if install.set_startup(on):
+            self._notify("Đã bật khởi động cùng Windows." if on
+                         else "Đã tắt khởi động cùng Windows.", 2500)
+        else:
+            self.startup_action.setChecked(not on)     # trả lại trạng thái nếu ghi lỗi
+            self._notify("Không đổi được cài đặt khởi động.", 3000)
+
+    def _make_shortcuts(self):
+        made = install.create_shortcuts()
+        self._notify(f"Đã tạo {len(made)} lối tắt (Start Menu + Desktop)." if made
+                     else "Không tạo được lối tắt.", 3000)
 
     def _enter_groq_key(self):
         from PySide6.QtWidgets import QInputDialog, QLineEdit
