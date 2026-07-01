@@ -14,7 +14,7 @@ _LOCK = threading.Lock()
 
 DEFAULTS = {
     "groq_api_key": "",
-    "groq_model": "whisper-large-v3-turbo",   # nhanh + chuẩn, free tier console.groq.com
+    "groq_model": "whisper-large-v3",         # chuẩn hơn cho tiếng Việt (turbo nhanh nhưng kém dấu)
     "groq_prompt": "",                        # gợi ý từ vựng/tên riêng để chép đúng hơn
     "installed": False,                       # đã tạo lối tắt + bật startup lần đầu chưa
 }

@@ -234,6 +234,16 @@ class Pill(QWidget):
         self.menu.addAction("Hiện pill", self.show)
         self.menu.addSeparator()
 
+        # Chất lượng nhận dạng: large-v3 (chuẩn hơn) hoặc turbo (nhanh hơn)
+        q = self.menu.addMenu("Chất lượng nhận dạng")
+        self.act_accurate = q.addAction(
+            "Chính xác · large-v3", lambda: self._set_model("whisper-large-v3"))
+        self.act_fast = q.addAction(
+            "Nhanh · turbo", lambda: self._set_model("whisper-large-v3-turbo"))
+        self.act_accurate.setCheckable(True)
+        self.act_fast.setCheckable(True)
+        self._refresh_model_menu()
+
         # Nhận dạng qua Groq (đám mây) -> cần API key (miễn phí ở console.groq.com)
         self.key_action = self.menu.addAction("Nhập Groq API key…", self._enter_groq_key)
         self._refresh_key_action()
@@ -267,6 +277,19 @@ class Pill(QWidget):
     def _tray_clicked(self, reason):
         if reason == QSystemTrayIcon.Trigger:      # click trái tray -> bật/tắt nói
             self.engine.toggle()
+
+    # ---------------- chất lượng nhận dạng (model Groq) ----------------
+    def _refresh_model_menu(self):
+        turbo = self.engine.groq_model.endswith("turbo")
+        self.act_accurate.setChecked(not turbo)
+        self.act_fast.setChecked(turbo)
+
+    def _set_model(self, model):
+        self.engine.set_groq_model(model)
+        self._refresh_model_menu()
+        self._notify("Nhận dạng: "
+                     + ("Chính xác (large-v3)" if not model.endswith("turbo")
+                        else "Nhanh (turbo)"), 2500)
 
     # ---------------- Groq API key ----------------
     def _refresh_key_action(self):

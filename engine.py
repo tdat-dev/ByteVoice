@@ -138,6 +138,14 @@ class SttEngine:
         cfg["groq_api_key"] = self.groq_api_key
         config.save(cfg)
 
+    def set_groq_model(self, model):
+        """Đổi model Groq (large-v3 = chuẩn hơn, turbo = nhanh hơn), lưu cấu hình."""
+        self.groq_model = model
+        cfg = config.load()
+        cfg["groq_model"] = model
+        config.save(cfg)
+        self.emit("device", self._label())
+
     # ----------------------- Thu âm (RAM) -----------------------
     def _audio_callback(self, indata, frames, time_info, status):
         if status:
