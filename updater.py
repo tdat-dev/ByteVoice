@@ -203,14 +203,27 @@ Log "done"
 
 
 def write_helper_and_spawn(staging_dir):
-    """Sinh helper PowerShell, chạy detached. Gọi xong app nên quit() ngay."""
+    """Sinh helper PowerShell, chạy nền. Gọi xong app nên quit() ngay.
+
+    QUAN TRỌNG (app windowed/noconsole): PHẢI gắn stdin/stdout/stderr=DEVNULL
+    và dùng CREATE_NO_WINDOW. Nếu không, PowerShell thừa kế handle console
+    không hợp lệ -> chết ngay khi khởi động, không kịp ghi log (update "kẹt":
+    đã tải staging xong, app thoát, nhưng file không được thay)."""
     ps1 = os.path.join(app_data_dir(), "apply_update.ps1")
     with open(ps1, "w", encoding="utf-8") as f:
         f.write(_HELPER_PS1)
-    DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    import shutil
+    exe = (shutil.which("powershell")
+           or os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                           "System32", "WindowsPowerShell", "v1.0",
+                           "powershell.exe"))
+    CREATE_NO_WINDOW = 0x08000000
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
     subprocess.Popen(
-        ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+        [exe, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
          "-ExecutionPolicy", "Bypass", "-File", ps1,
          str(os.getpid()), install_dir(), staging_dir],
-        creationflags=DETACHED, close_fds=True,
+        creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, close_fds=True,
     )
