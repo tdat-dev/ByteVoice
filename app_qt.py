@@ -83,25 +83,26 @@ MIC_SVG = (
     '<line x1="12" y1="17" x2="12" y2="21"/></svg>'
 )
 
-# Logo thương hiệu Sottra (waveform amber trên squircle tối) — dùng cho icon tray.
+# Logo thương hiệu Sottra "Ember" — ô amber, glyph mực: sóng âm dâng thành
+# con trỏ chữ (I-beam) = giọng nói trở thành text. Nổi bật trên taskbar tối/sáng.
 # Giữ đồng bộ với icon.svg / icon.ico ở thư mục gốc.
 BRAND_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">'
     '<defs>'
-    '<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">'
-    '<stop offset="0" stop-color="#17171F"/><stop offset="1" stop-color="#0C0C11"/></linearGradient>'
-    '<linearGradient id="amber" x1="0" y1="0" x2="0" y2="1">'
-    '<stop offset="0" stop-color="#F6C455"/><stop offset="1" stop-color="#E0A030"/></linearGradient>'
+    '<linearGradient id="am" x1="0" y1="0" x2="0" y2="1">'
+    '<stop offset="0" stop-color="#FFD36A"/><stop offset="1" stop-color="#E09A28"/></linearGradient>'
     '</defs>'
-    '<rect x="8" y="8" width="240" height="240" rx="60" fill="url(#bg)"/>'
+    '<rect x="8" y="8" width="240" height="240" rx="60" fill="url(#am)"/>'
     '<rect x="9.5" y="9.5" width="237" height="237" rx="58.5" fill="none" '
-    'stroke="#F6C455" stroke-opacity="0.14" stroke-width="1.5"/>'
-    '<g fill="url(#amber)">'
-    '<rect x="45" y="96" width="22" height="64" rx="11"/>'
-    '<rect x="81" y="76" width="22" height="104" rx="11"/>'
-    '<rect x="117" y="53" width="22" height="150" rx="11"/>'
-    '<rect x="153" y="76" width="22" height="104" rx="11"/>'
-    '<rect x="189" y="96" width="22" height="64" rx="11"/>'
+    'stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="1.5"/>'
+    '<g fill="#17171F">'
+    '<rect x="40" y="106" width="22" height="44" rx="11"/>'
+    '<rect x="74" y="88" width="22" height="80" rx="11"/>'
+    '<rect x="108" y="64" width="22" height="128" rx="11"/>'
+    '<rect x="142" y="92" width="22" height="72" rx="11"/>'
+    '<rect x="188" y="60" width="16" height="136" rx="8"/>'
+    '<rect x="177" y="52" width="38" height="14" rx="7"/>'
+    '<rect x="177" y="190" width="38" height="14" rx="7"/>'
     '</g></svg>'
 )
 
