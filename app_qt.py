@@ -57,8 +57,9 @@ from engine import SttEngine
 # Canvas trong suốt cố định; capsule tự nở/thu bên trong (không resize cửa sổ -> không giật).
 # Lúc rảnh = chấm tròn tí hon (gọn). Lúc thu âm = pill dài có sóng âm + đồng hồ (dễ nhận ra).
 WIN_W, WIN_H = 208, 54            # đủ chỗ pill nở hết cỡ + quầng sáng
-CAP_H = 38                       # cao capsule = đường kính chấm lúc nghỉ
-DOT_W = CAP_H                    # rộng lúc nghỉ (chấm tròn)
+CAP_H = 38                       # cao capsule = đường kính chấm lúc nghỉ (cũ), giờ là chiều cao lúc pill mở
+IDLE_W = 40                      # rộng lúc nghỉ (thanh ngang)
+IDLE_H = 4                       # cao lúc nghỉ (thanh ngang)
 PILL_W = 182                     # rộng lúc thu âm / đang chép
 WAVE_N = 15                      # số cột sóng âm
 MARGIN = 4
@@ -560,52 +561,73 @@ class Pill(QWidget):
         """Bề rộng capsule hiện tại (px). easeOutCubic: nở dứt khoát, thu mượt."""
         e = max(0.0, min(1.0, self.open))
         e = 1.0 - (1.0 - e) ** 3
-        return DOT_W + (PILL_W - DOT_W) * e
+        return IDLE_W + (PILL_W - IDLE_W) * e
+
+    def _capsule_h(self):
+        """Chiều cao capsule hiện tại (px)."""
+        e = max(0.0, min(1.0, self.open))
+        e = 1.0 - (1.0 - e) ** 3
+        return IDLE_H + (CAP_H - IDLE_H) * e
 
     def _sync_mask(self, force=False):
         """Chỉ để capsule (không phải cả canvas trong suốt) bắt chuột -> phần còn lại
-        cho click xuyên xuống app phía dưới. Cập nhật khi bề rộng đổi."""
+        cho click xuyên xuống app phía dưới. Cập nhật khi kích thước đổi."""
         w = self._capsule_w()
         if not force and abs(w - self._last_w) < 0.5:
             return
         self._last_w = w
+        h = self._capsule_h()
         cy = self.height() / 2.0
         left = (self.width() - w) / 2.0
         pad = 8                                            # chừa quầng sáng ngoài viền
         rect = QRect(
-            int(left - pad), int(cy - CAP_H / 2.0 - pad),
-            int(w + 2 * pad), int(CAP_H + 2 * pad),
+            int(left - pad), int(cy - h / 2.0 - pad),
+            int(w + 2 * pad), int(h + 2 * pad),
         )
         self.setMask(QRegion(rect))
 
-    # ---------------- vẽ (chấm nở thành pill sóng âm) ----------------
+    # ---------------- vẽ (thanh ngang thành pill sóng âm) ----------------
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
+        e = max(0.0, min(1.0, self.open))
+        e = 1.0 - (1.0 - e) ** 3
+
         w = self._capsule_w()
+        h = self._capsule_h()
         cy = self.height() / 2.0
         left = (self.width() - w) / 2.0
-        rad = CAP_H / 2.0
-        cap = QRectF(left, cy - rad, w, CAP_H)
+        rad = h / 2.0
+        cap = QRectF(left, cy - rad, w, h)
         path = QPainterPath()
         path.addRoundedRect(cap, rad, rad)
 
-        # Nền tối (gradient thương hiệu) + hairline amber luôn có -> "có hồn" lúc đứng yên
-        grad = QLinearGradient(cap.topLeft(), cap.bottomLeft())
-        grad.setColorAt(0.0, BG_TOP)
-        grad.setColorAt(1.0, BG_BOT)
-        p.setPen(Qt.NoPen)
-        p.setBrush(grad)
-        p.drawPath(path)
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(_amber(40), 1.0))
-        p.drawPath(path)
+        # Nền tối (gradient) và viền amber, hiện dần khi mở
+        dark_alpha = int(255 * e)
+        if dark_alpha > 0:
+            grad = QLinearGradient(cap.topLeft(), cap.bottomLeft())
+            grad.setColorAt(0.0, QColor(BG_TOP.red(), BG_TOP.green(), BG_TOP.blue(), dark_alpha))
+            grad.setColorAt(1.0, QColor(BG_BOT.red(), BG_BOT.green(), BG_BOT.blue(), dark_alpha))
+            p.setPen(Qt.NoPen)
+            p.setBrush(grad)
+            p.drawPath(path)
+            
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(_amber(int(40 * e)), 1.0))
+            p.drawPath(path)
+
+        # Thanh trắng khi nghỉ, mờ dần khi mở
+        white_alpha = int(180 * (1.0 - e))
+        if white_alpha > 0:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, white_alpha))
+            p.drawPath(path)
 
         # Độ hiện của nội dung bên trong pill (sóng/đồng hồ/chấm nghĩ) theo mức nở
         content = max(0.0, min(1.0, (self.open - 0.35) / 0.5))
-        icon_cx = left + rad                               # icon trượt về nắp trái khi nở
+        icon_cx = left + CAP_H / 2.0                       # icon trượt về nắp trái khi mở
 
         if self.state == "recording":
             self._paint_record_ring(p, cap, rad)
@@ -616,11 +638,16 @@ class Pill(QWidget):
             if content > 0.02:
                 self._paint_thinking(p, left, w, cy, content)
             else:
-                self._paint_spinner(p, cap, rad)
+                self._paint_spinner(p, cap, CAP_H / 2.0)
         elif self.state == "loading":
-            self._paint_spinner(p, cap, rad)
+            self._paint_spinner(p, cap, CAP_H / 2.0)
 
-        self._paint_icon(p, icon_cx, cy)
+        # Icon mờ đi khi đóng lại thành thanh ngang
+        if e > 0.02:
+            p.setOpacity(e)
+            self._paint_icon(p, icon_cx, cy)
+            p.setOpacity(1.0)
+
         p.end()
 
     def _paint_record_ring(self, p, cap, rad):

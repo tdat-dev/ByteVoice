@@ -434,6 +434,14 @@ class SttEngine:
         # Toggle: chỉ lật ở lần nhấn ĐẦU, bỏ qua auto-repeat khi giữ phím
         if key in self.hotkey_keys and not self._hotkey_down:
             self._hotkey_down = True
+            
+            # Chặn menu Alt của Windows bằng cách giả lập nhấn phím rỗng (vk 0xFF)
+            # khi phím Alt đang được giữ. Tránh bị mất focus và mất chữ đầu tiên.
+            try:
+                self.kb.tap(keyboard.KeyCode.from_vk(0xFF))
+            except Exception:
+                pass
+                
             self.toggle()
 
     def _on_release(self, key):
