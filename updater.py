@@ -19,7 +19,7 @@ import urllib.request
 
 from version import __version__
 
-REPO = "tdat-dev/wakervoice"
+REPO = "tdat-dev/ByteVoice"
 BLOBS_TAG = "blobs"
 _UA = {"User-Agent": "WakerVoice-Updater"}
 
