@@ -39,7 +39,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Sottra",
+    name="WakerVoice",
     debug=False,
     strip=False,
     upx=False,
@@ -52,5 +52,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="Sottra",
+    name="WakerVoice",
 )

@@ -1,5 +1,5 @@
 """
-Sottra — delta auto-update (Windows, PyInstaller onedir).
+WakerVoice — delta auto-update (Windows, PyInstaller onedir).
 
 Ý tưởng: mỗi release kèm `manifest.json` (path -> sha256). App so manifest mới với
 manifest local (đóng trong bundle) -> chỉ tải file đã đổi từ kho blob
@@ -19,9 +19,9 @@ import urllib.request
 
 from version import __version__
 
-REPO = "tdat-dev/sottra"
+REPO = "tdat-dev/wakervoice"
 BLOBS_TAG = "blobs"
-_UA = {"User-Agent": "Sottra-Updater"}
+_UA = {"User-Agent": "WakerVoice-Updater"}
 
 
 # ----------------------- hàm thuần (test được) -----------------------
@@ -59,13 +59,13 @@ def is_frozen():
 
 
 def install_dir():
-    """Thư mục cài (chứa Sottra.exe + _internal). Chỉ ý nghĩa khi frozen."""
+    """Thư mục cài (chứa WakerVoice.exe + _internal). Chỉ ý nghĩa khi frozen."""
     return os.path.dirname(sys.executable)
 
 
 def app_data_dir():
     base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
-    d = os.path.join(base, "Sottra")
+    d = os.path.join(base, "WakerVoice")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -179,7 +179,7 @@ def stage_update(remote_manifest, progress_cb=None):
 _HELPER_PS1 = r"""
 param([int]$ProcPid, [string]$Install, [string]$Staging)
 $ErrorActionPreference = 'Continue'
-$log = Join-Path $env:LOCALAPPDATA 'Sottra\update.log'
+$log = Join-Path $env:LOCALAPPDATA 'WakerVoice\update.log'
 function Log($m) { "$(Get-Date -Format o)  $m" | Out-File -FilePath $log -Append -Encoding utf8 }
 Log "apply start pid=$ProcPid install=$Install staging=$Staging"
 try { Wait-Process -Id $ProcPid -Timeout 30 -ErrorAction SilentlyContinue } catch {}
@@ -197,7 +197,7 @@ if (Test-Path $del) {
 }
 Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
 Log "relaunch"
-Start-Process -FilePath (Join-Path $Install 'Sottra.exe')
+Start-Process -FilePath (Join-Path $Install 'WakerVoice.exe')
 Log "done"
 """
 

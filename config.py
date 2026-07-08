@@ -1,8 +1,8 @@
 """
-Sottra — cấu hình người dùng
+WakerVoice — cấu hình người dùng
 ============================
-Lưu Groq API key + tuỳ chọn ở %APPDATA%\\Sottra\\config.json (Windows) /
-~/.config/Sottra (khác). Cố tình tối giản: không phụ thuộc thư viện ngoài,
+Lưu Groq API key + tuỳ chọn ở %APPDATA%\\WakerVoice\\config.json (Windows) /
+~/.config/WakerVoice (khác). Cố tình tối giản: không phụ thuộc thư viện ngoài,
 đọc/ghi an toàn khi lỗi.
 """
 
@@ -27,7 +27,7 @@ def _config_dir():
     base = os.environ.get("APPDATA")
     if not base:
         base = os.path.join(os.path.expanduser("~"), ".config")
-    d = os.path.join(base, "Sottra")
+    d = os.path.join(base, "WakerVoice")
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:

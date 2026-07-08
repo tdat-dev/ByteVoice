@@ -1,5 +1,5 @@
 /* ============================================================
-   Sottra — voice pill frontend
+   WakerVoice — voice pill frontend
    Python -> JS: window.__emit(event, payload)
    JS -> Python: window.pywebview.api.*
    ============================================================ */
@@ -63,7 +63,7 @@
       case "model": if (payload === "loading") setState("loading"); break;
       case "state": setState(payload); break;
       case "result": flash(payload); break;
-      case "error": console.error("Sottra:", payload); break;
+      case "error": console.error("WakerVoice:", payload); break;
     }
     if (event !== "level") api()?.jslog(event + ":" + JSON.stringify(payload));
   };

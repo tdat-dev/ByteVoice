@@ -1,10 +1,10 @@
-# Sottra
+# WakerVoice
 
 **Push-to-Talk Speech-to-Text** chạy hoàn toàn offline. Giữ một phím tắt toàn cục,
 nói, nhả phím — chữ tiếng Việt tự chèn vào nơi con trỏ đang đứng. Không gọi bất kỳ
 API cloud/LLM nào.
 
-> Tên *Sottra* lấy từ **sotto voce** (nói rất khẽ) — đúng tinh thần "nói thầm ra chữ".
+> Tên *WakerVoice* lấy từ **sotto voce** (nói rất khẽ) — đúng tinh thần "nói thầm ra chữ".
 
 Giao diện là một **pill** nổi, siêu nhẹ, vẽ bằng Qt (PySide6 / QPainter). Backend nhận
 dạng dùng **faster-whisper** cục bộ.
@@ -50,21 +50,21 @@ nên mở terminal **bằng quyền Administrator**.
 
 ```bash
 pip install pyinstaller
-pyinstaller Sottra.spec
+pyinstaller WakerVoice.spec
 ```
 
-Kết quả ở `dist/Sottra/Sottra.exe`. Icon lấy từ `icon.ico`.
+Kết quả ở `dist/WakerVoice/WakerVoice.exe`. Icon lấy từ `icon.ico`.
 
 ## Cấu trúc
 
 ```
-sottra/
+wakervoice/
 ├── app_qt.py         # pill Qt (PySide6) + tray + nhận diện icon app — bản chính
 ├── app.py            # bản pywebview cũ (giữ tham khảo)
 ├── engine.py         # STT engine: hotkey, thu âm RAM, faster-whisper, xuất chữ
 ├── icon.svg          # logo nguồn (waveform amber)
 ├── icon.ico / icon.png
-├── Sottra.spec       # cấu hình PyInstaller
+├── WakerVoice.spec       # cấu hình PyInstaller
 ├── requirements.txt
 └── web/              # frontend cho bản pywebview cũ
 ```
@@ -73,7 +73,7 @@ sottra/
 
 - **Mô hình**: tiny/base/small/medium (đổi sẽ nạp lại).
 - **Phím tắt**: Right/Left Alt, Right Ctrl, F8, F9, Pause.
-- **Ép CPU**: đặt biến môi trường `SOTTRA_DEVICE=cpu`.
+- **Ép CPU**: đặt biến môi trường `WAKERVOICE_DEVICE=cpu`.
 
 ## Bản quyền
 

@@ -1,5 +1,5 @@
 """
-Sottra — desktop app (pywebview + faster-whisper)
+WakerVoice — desktop app (pywebview + faster-whisper)
 =================================================
 Pill nổi siêu nhẹ (WebView2 có sẵn trên Windows). Sống ở SYSTEM TRAY,
 KHÔNG hiện trên taskbar. Pill chỉ hiện khi đang nói/dịch, còn lại tự ẩn.
@@ -31,10 +31,10 @@ from engine import SttEngine, HOTKEY_LABELS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(BASE_DIR, "web", "index.html")
-LOG = os.path.join(BASE_DIR, "sottra.log")
+LOG = os.path.join(BASE_DIR, "wakervoice.log")
 
 WIN_W, WIN_H = 160, 44
-TITLE = "Sottra"
+TITLE = "WakerVoice"
 
 _window = None
 _engine = None
@@ -176,7 +176,7 @@ def _tray_thread():
         Item("Thoát", lambda i, it: _quit()),
     )
     global _tray_icon
-    _tray_icon = pystray.Icon("sottra", _make_icon_image(), "Sottra — voice to text", menu)
+    _tray_icon = pystray.Icon("wakervoice", _make_icon_image(), "WakerVoice — voice to text", menu)
     _tray_icon.run()
 
 

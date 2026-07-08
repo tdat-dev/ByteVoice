@@ -1,9 +1,9 @@
 """
-Sottra — script phát hành (build + manifest + blob delta + GitHub Release).
+WakerVoice — script phát hành (build + manifest + blob delta + GitHub Release).
 
 Dùng:
     python tools/release.py            # build + publish version trong version.py
-    python tools/release.py --no-build # dùng dist/Sottra sẵn có
+    python tools/release.py --no-build # dùng dist/WakerVoice sẵn có
     python tools/release.py --dry-run  # in kế hoạch, không upload/tạo release
 
 Nguyên tắc delta: kho blob địa-chỉ-theo-hash ở release cố định tag `blobs`
@@ -31,7 +31,7 @@ sys.path.insert(0, ROOT)
 from version import __version__          # noqa: E402
 from updater import sha256_file, _get_json, REPO, BLOBS_TAG  # noqa: E402
 
-DIST = os.path.join(ROOT, "dist", "Sottra")
+DIST = os.path.join(ROOT, "dist", "WakerVoice")
 
 
 def run(cmd, **kw):
@@ -41,12 +41,12 @@ def run(cmd, **kw):
 
 def build():
     run([os.path.join(ROOT, ".venv", "Scripts", "pyinstaller.exe"),
-         os.path.join(ROOT, "Sottra.spec"), "--noconfirm", "--clean"], cwd=ROOT)
+         os.path.join(ROOT, "WakerVoice.spec"), "--noconfirm", "--clean"], cwd=ROOT)
 
 
 def make_manifest():
-    """sha256 mọi file trong dist/Sottra (trừ manifest.json). path dùng '/'.
-    Ghi dist/Sottra/manifest.json, trả dict files."""
+    """sha256 mọi file trong dist/WakerVoice (trừ manifest.json). path dùng '/'.
+    Ghi dist/WakerVoice/manifest.json, trả dict files."""
     files = {}
     for r, _d, fs in os.walk(DIST):
         for f in fs:
@@ -105,7 +105,7 @@ def upload_blobs(to_upload):
         return
     ensure_blobs_release()
     have = existing_blob_names()
-    tmp = tempfile.mkdtemp(prefix="sottra_blobs_")
+    tmp = tempfile.mkdtemp(prefix="wakervoice_blobs_")
     staged = []
     for rel, h in to_upload.items():
         if h in have:
@@ -127,14 +127,14 @@ def upload_blobs(to_upload):
 
 
 def make_zip():
-    out = os.path.join(ROOT, "dist", f"Sottra-v{__version__}-win64-cloud.zip")
+    out = os.path.join(ROOT, "dist", f"WakerVoice-v{__version__}-win64-cloud.zip")
     print(f"  nén {out}…")
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6,
                          allowZip64=True) as z:
         for r, _d, fs in os.walk(DIST):
             for f in fs:
                 full = os.path.join(r, f)
-                arc = os.path.join("Sottra", os.path.relpath(full, DIST))
+                arc = os.path.join("WakerVoice", os.path.relpath(full, DIST))
                 z.write(full, arc)
     return out
 
@@ -142,13 +142,13 @@ def make_zip():
 def publish_version(zip_path):
     tag = f"v{__version__}"
     manifest_path = os.path.join(DIST, "manifest.json")
-    notes = (f"Sottra {tag}. Bản cài mới: tải zip bên dưới, giải nén, chạy Sottra.exe.\n"
+    notes = (f"WakerVoice {tag}. Bản cài mới: tải zip bên dưới, giải nén, chạy WakerVoice.exe.\n"
              "Bản đã cài (>=1.1.0) sẽ tự đề xuất cập nhật delta.")
     print(f"  tạo release {tag}…")
-    run(["gh", "release", "create", tag, "--repo", REPO, "--title", f"Sottra {tag}",
+    run(["gh", "release", "create", tag, "--repo", REPO, "--title", f"WakerVoice {tag}",
          "--notes", notes, "--latest",
          f"{manifest_path}#manifest.json",
-         f"{zip_path}#Sottra {tag} (Windows 64-bit, cloud)"])
+         f"{zip_path}#WakerVoice {tag} (Windows 64-bit, cloud)"])
 
 
 def main():
@@ -157,7 +157,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    print(f"== Release Sottra v{__version__} ==")
+    print(f"== Release WakerVoice v{__version__} ==")
     if not args.no_build:
         print("[1] build"); build()
     else:

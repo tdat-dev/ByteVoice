@@ -1,8 +1,8 @@
 """
-Sottra — tích hợp Windows
+WakerVoice — tích hợp Windows
 =========================
 App ship dạng zip portable (không installer) -> tự lo phần "cài":
-  * Lối tắt Start Menu + Desktop trỏ tới Sottra.exe (mở nhanh, tìm được ở Start).
+  * Lối tắt Start Menu + Desktop trỏ tới WakerVoice.exe (mở nhanh, tìm được ở Start).
   * Chạy cùng Windows qua HKCU\\...\\Run (đăng nhập là bật sẵn ở khay).
 
 Chỉ có ý nghĩa khi chạy bản đóng gói (frozen). Mọi hàm đều nuốt lỗi -> không
@@ -13,7 +13,7 @@ import os
 import sys
 import subprocess
 
-APP_NAME = "Sottra"
+APP_NAME = "WakerVoice"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -23,7 +23,7 @@ def is_frozen():
 
 
 def _exe_path():
-    """Đường dẫn Sottra.exe hiện tại (frozen). Dev: python.exe -> đừng dùng để cài."""
+    """Đường dẫn WakerVoice.exe hiện tại (frozen). Dev: python.exe -> đừng dùng để cài."""
     return sys.executable
 
 
@@ -82,7 +82,7 @@ def _desktop_dir():
 
 
 def _make_lnk(dest_dir):
-    """Tạo <dest_dir>\\Sottra.lnk trỏ tới exe (qua WScript.Shell trong PowerShell —
+    """Tạo <dest_dir>\\WakerVoice.lnk trỏ tới exe (qua WScript.Shell trong PowerShell —
     không cần pywin32). Trả path .lnk hoặc None nếu lỗi."""
     exe = _exe_path()
     lnk = os.path.join(dest_dir, APP_NAME + ".lnk")
@@ -96,7 +96,7 @@ def _make_lnk(dest_dir):
         f"$s.TargetPath={q(exe)};"
         f"$s.WorkingDirectory={q(os.path.dirname(exe))};"
         f"$s.IconLocation={q(exe + ',0')};"
-        "$s.Description='Sottra — voice to text';"
+        "$s.Description='WakerVoice — voice to text';"
         "$s.Save()"
     )
     try:

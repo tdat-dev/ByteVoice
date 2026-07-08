@@ -1,5 +1,5 @@
 """
-Sottra — STT engine (cloud-only, Groq)
+WakerVoice — STT engine (cloud-only, Groq)
 ======================================
 Push-to-talk: giữ/nhấn phím -> thu âm RAM (16kHz) -> gửi lên Groq
 (whisper-large-v3-turbo) -> gõ tại con trỏ HOẶC copy clipboard.
@@ -327,7 +327,7 @@ class SttEngine:
             w.writeframes(pcm16)
         wav_bytes = buf.getvalue()
 
-        boundary = "----SottraBoundary" + uuid.uuid4().hex
+        boundary = "----WakerVoiceBoundary" + uuid.uuid4().hex
 
         def _field(name, value):
             return (
@@ -360,7 +360,7 @@ class SttEngine:
                 "Authorization": f"Bearer {self.groq_api_key}",
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
                 # Cloudflare của Groq chặn UA mặc định "Python-urllib" (lỗi 1010) -> đặt UA riêng
-                "User-Agent": "Sottra/1.0",
+                "User-Agent": "WakerVoice/1.0",
                 "Accept": "application/json",
             },
         )
@@ -392,7 +392,7 @@ class SttEngine:
                 headers={
                     "Authorization": f"Bearer {self.groq_api_key}",
                     "Content-Type": "application/json",
-                    "User-Agent": "Sottra/1.0",
+                    "User-Agent": "WakerVoice/1.0",
                 },
             )
             with urllib.request.urlopen(req, timeout=15) as resp:

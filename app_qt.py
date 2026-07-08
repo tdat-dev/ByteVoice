@@ -1,5 +1,5 @@
 """
-Sottra — voice-to-text pill (PySide6 / Qt)
+WakerVoice — voice-to-text pill (PySide6 / Qt)
 ==========================================
 UI tự vẽ bằng QPainter trên 1 mặt phẳng trong suốt -> bo tròn lozenge MƯỢT thật,
 KHÔNG dính giới hạn WebView2 (không child-window, không viền trắng, không shadow lỗi).
@@ -20,7 +20,7 @@ import traceback
 
 # App windowed (PyInstaller) -> sys.stdout/stderr = None, print() sẽ hỏng + không thấy lỗi.
 # Đổi hướng MỌI log + traceback ra file để chẩn đoán được.
-_LOG = os.path.join(tempfile.gettempdir(), "sottra_qt.log")
+_LOG = os.path.join(tempfile.gettempdir(), "wakervoice_qt.log")
 try:
     _logf = open(_LOG, "w", encoding="utf-8", buffering=1)
     sys.stdout = _logf
@@ -84,7 +84,7 @@ MIC_SVG = (
     '<line x1="12" y1="17" x2="12" y2="21"/></svg>'
 )
 
-# Logo thương hiệu Sottra "Ember" — ô amber, glyph mực: sóng âm dâng thành
+# Logo thương hiệu WakerVoice "Ember" — ô amber, glyph mực: sóng âm dâng thành
 # con trỏ chữ (I-beam) = giọng nói trở thành text. Nổi bật trên taskbar tối/sáng.
 # Giữ đồng bộ với icon.svg / icon.ico ở thư mục gốc.
 BRAND_SVG = (
@@ -145,7 +145,7 @@ class Pill(QWidget):
         )                                          # Tool -> KHÔNG hiện trên taskbar
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)  # hiện mà không activate
-        self.setWindowTitle("Sottra")
+        self.setWindowTitle("WakerVoice")
         self.setFixedSize(WIN_W, WIN_H)
         self.mic = QSvgRenderer(QByteArray(MIC_SVG.encode("utf-8")))
         self.brand = QSvgRenderer(QByteArray(BRAND_SVG.encode("utf-8")))
@@ -229,7 +229,7 @@ class Pill(QWidget):
 
     def _build_tray(self):
         self.menu = QMenu()
-        header = self.menu.addAction(f"Sottra v{__version__}")
+        header = self.menu.addAction(f"WakerVoice v{__version__}")
         header.setEnabled(False)
         self.menu.addSeparator()
         self.menu.addAction("Bật / tắt nói", self.engine.toggle)
@@ -288,7 +288,7 @@ class Pill(QWidget):
         self.menu.addSeparator()
         self.menu.addAction("Thoát", self._quit)
         self.tray = QSystemTrayIcon(self._make_icon(), self)
-        self.tray.setToolTip("Sottra — voice to text")
+        self.tray.setToolTip("WakerVoice — voice to text")
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._tray_clicked)
         self.tray.messageClicked.connect(self._on_balloon_clicked)
@@ -375,7 +375,7 @@ class Pill(QWidget):
 
     # ---------------- auto-update ----------------
     def _notify(self, msg, ms=6000):
-        self.tray.showMessage("Sottra", msg,
+        self.tray.showMessage("WakerVoice", msg,
                               QSystemTrayIcon.MessageIcon.Information, ms)
 
     def _check_updates_bg(self):
@@ -424,7 +424,7 @@ class Pill(QWidget):
             self._usig.failed.emit(str(e))
 
     def _on_update_progress(self, pct, rel):
-        self.tray.setToolTip(f"Sottra — đang tải cập nhật… {pct}%")
+        self.tray.setToolTip(f"WakerVoice — đang tải cập nhật… {pct}%")
 
     def _on_update_done(self):
         self._notify("Đã tải xong — đang khởi động lại để cập nhật…", 3000)
@@ -435,7 +435,7 @@ class Pill(QWidget):
             self._notify("Bạn đang dùng bản mới nhất.", 3000)
             return
         self.update_action.setEnabled(True)
-        self.tray.setToolTip("Sottra — voice to text")
+        self.tray.setToolTip("WakerVoice — voice to text")
         if self._update_info:
             self._notify(f"Cập nhật lỗi: {msg}. Mở trang tải…", 6000)
             try:

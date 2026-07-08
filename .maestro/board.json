@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "lists": [
+    {
+      "id": "lmrasdfw219",
+      "title": "To do",
+      "cards": []
+    },
+    {
+      "id": "lmrasdfw220",
+      "title": "Doing",
+      "cards": []
+    },
+    {
+      "id": "lmrasdfw221",
+      "title": "Done",
+      "cards": []
+    }
+  ]
+}

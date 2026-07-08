@@ -1,14 +1,14 @@
-# Sottra — Delta auto-update (design)
+# WakerVoice — Delta auto-update (design)
 
 **Date:** 2026-06-30
 **Status:** Approved (pending spec review)
-**Repo:** https://github.com/tdat-dev/sottra
+**Repo:** https://github.com/tdat-dev/wakervoice
 
 ## Mục tiêu
 
 App tự cập nhật lên bản mới mà **không phải tải lại 1.47GB mỗi lần**. Phần lớn
 bundle (CUDA DLL, PySide6, ctranslate2 ≈ 2.3GB) cố định giữa các phiên bản; đổi
-code thường chỉ thay đúng `Sottra.exe` (~14MB). Cập nhật **delta** chỉ tải file đã
+code thường chỉ thay đúng `WakerVoice.exe` (~14MB). Cập nhật **delta** chỉ tải file đã
 đổi, **hỏi người dùng trước** khi áp dụng.
 
 ## Quyết định đã chốt
@@ -32,20 +32,20 @@ và `tools/release.py` (đặt tag, ghi manifest). So sánh kiểu **semver** (t
   app chỉ cần tải các hash nó đang thiếu, bất kể đổi từ version nào.
 - Mỗi release phiên bản (`vX.Y.Z`) kèm 2 asset:
   - `manifest.json`: `{ "version": "X.Y.Z", "files": { "<path>": "<sha256>", ... } }`
-    — `path` tương đối thư mục cài (vd `Sottra.exe`, `_internal/python311.dll`).
+    — `path` tương đối thư mục cài (vd `WakerVoice.exe`, `_internal/python311.dll`).
     Không liệt kê chính `manifest.json`.
-  - `Sottra-vX.Y.Z-win64-gpu.zip`: bản cài đầy đủ cho người cài mới.
+  - `WakerVoice-vX.Y.Z-win64-gpu.zip`: bản cài đầy đủ cho người cài mới.
 
 ### 3. Script phát hành — `tools/release.py`
 Tự động hoá để manifest và blob **không bao giờ lệch nhau**:
-1. (Tuỳ chọn) chạy PyInstaller `Sottra.spec`.
-2. Duyệt `dist/Sottra`, tính sha256 từng file → `manifest.json` (ghi vào
-   `dist/Sottra/manifest.json` để **đóng luôn vào bundle** = local manifest của
+1. (Tuỳ chọn) chạy PyInstaller `WakerVoice.spec`.
+2. Duyệt `dist/WakerVoice`, tính sha256 từng file → `manifest.json` (ghi vào
+   `dist/WakerVoice/manifest.json` để **đóng luôn vào bundle** = local manifest của
    bản cài đó). Loại trừ chính `manifest.json` khỏi danh sách.
 3. Đảm bảo release `blobs` tồn tại (tạo nếu chưa). Lấy danh sách asset hiện có;
-   **upload chỉ những blob có hash chưa tồn tại** (đổi code → thường chỉ `Sottra.exe`).
+   **upload chỉ những blob có hash chưa tồn tại** (đổi code → thường chỉ `WakerVoice.exe`).
    Tên asset = `<sha256>`.
-4. Zip full `dist/Sottra` → `Sottra-vX.Y.Z-win64-gpu.zip`.
+4. Zip full `dist/WakerVoice` → `WakerVoice-vX.Y.Z-win64-gpu.zip`.
 5. `gh release create vX.Y.Z` kèm `manifest.json` + zip; đặt `--latest`.
 
 > Lưu ý GitHub: tên asset không cho vài ký tự; sha256 hex (0-9a-f) hợp lệ. Mỗi
@@ -58,7 +58,7 @@ Hàm thuần, tách khỏi UI, để test được:
 - `current_version() -> str` — từ `version.py`.
 - `is_newer(remote, local) -> bool` — so sánh semver.
 - `check_latest() -> dict | None` — GET
-  `api.github.com/repos/tdat-dev/sottra/releases/latest` (không cần auth; giới hạn
+  `api.github.com/repos/tdat-dev/wakervoice/releases/latest` (không cần auth; giới hạn
   60 req/giờ/IP là đủ). Trả `{version, manifest_url, html_url}` nếu mới hơn, else None.
 - `diff_manifest(local, remote) -> (fetch:set[str], delete:set[str])` — **thuần**,
   unit-test trực tiếp. `fetch` = path có hash khác hoặc thiếu local; `delete` =
@@ -66,21 +66,21 @@ Hàm thuần, tách khỏi UI, để test được:
 - `download_blob(sha, dest)` — tải `blobs/<sha>` → verify sha256 → ghi `dest`.
   Sai hash → thử lại 1 lần rồi raise.
 - `stage_update(remote_manifest)` — tải mọi blob trong `fetch` về
-  `%LOCALAPPDATA%\Sottra\staging\<path>`; ghi `manifest.json` mới vào staging;
+  `%LOCALAPPDATA%\WakerVoice\staging\<path>`; ghi `manifest.json` mới vào staging;
   trả về (staging_dir, delete_set).
 - `apply_and_restart(staging_dir, delete_set)` — sinh helper PowerShell, spawn
   detached, rồi `QApplication.quit()`.
 
 ### 5. Helper áp dụng — `apply_update.ps1` (sinh lúc chạy)
-App đang chạy khoá `Sottra.exe` + DLL đã nạp → phải để **tiến trình ngoài** làm
-sau khi app thoát. Ghi ra `%LOCALAPPDATA%\Sottra\apply_update.ps1`, gọi:
+App đang chạy khoá `WakerVoice.exe` + DLL đã nạp → phải để **tiến trình ngoài** làm
+sau khi app thoát. Ghi ra `%LOCALAPPDATA%\WakerVoice\apply_update.ps1`, gọi:
 `powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File apply_update.ps1 <pid> <install_dir> <staging_dir>`
 Các bước trong helper:
 1. Đợi tiến trình `<pid>` thoát (`Wait-Process` / vòng lặp, timeout ~30s).
 2. Copy đè cây file từ `<staging_dir>` sang `<install_dir>` (robocopy).
 3. Xoá các file trong `delete_set` (truyền qua file `delete.txt` trong staging).
-4. Khởi động lại `<install_dir>\Sottra.exe`.
-5. Dọn staging. Ghi log mọi bước ra `%LOCALAPPDATA%\Sottra\update.log`.
+4. Khởi động lại `<install_dir>\WakerVoice.exe`.
+5. Dọn staging. Ghi log mọi bước ra `%LOCALAPPDATA%\WakerVoice\update.log`.
 
 ### 6. Wiring UI — `app_qt.py`
 - Menu tray thêm: **"Kiểm tra cập nhật"** (thủ công) và mục động
@@ -119,9 +119,9 @@ startup ──► check_latest() ──(mới hơn?)──► Bridge ──► t
 - **Unit:** `diff_manifest` (các tổ hợp thêm/đổi/xoá/giống hệt), `is_newer`
   (1.0.0 vs 1.0.1, 1.2.0 vs 1.10.0, bằng nhau, có/không tiền tố `v`).
 - **Release script dry-run:** sinh manifest + xác định blob cần upload mà không
-  upload thật; kiểm tra đổi code chỉ ra 1 blob (`Sottra.exe`).
+  upload thật; kiểm tra đổi code chỉ ra 1 blob (`WakerVoice.exe`).
 - **E2E thật:** bump `1.0.1`, đổi 1 dòng code, `release.py` publish → chạy exe
-  `1.0.0` → xác nhận phát hiện bản mới → tải đúng ~14MB (`Sottra.exe`) → restart
+  `1.0.0` → xác nhận phát hiện bản mới → tải đúng ~14MB (`WakerVoice.exe`) → restart
   thành `1.0.1`. Kiểm tra `update.log`.
 
 ## Phạm vi loại trừ (YAGNI)
@@ -134,5 +134,5 @@ startup ──► check_latest() ──(mới hơn?)──► Bridge ──► t
 ## File ảnh hưởng
 - **Mới:** `version.py`, `updater.py`, `tools/release.py`.
 - **Sửa:** `app_qt.py` (tray + startup check), `README.md` (mục cập nhật),
-  `Sottra.spec` (đảm bảo `version.py` vào bundle; `manifest.json` do release.py
+  `WakerVoice.spec` (đảm bảo `version.py` vào bundle; `manifest.json` do release.py
   ghi vào `dist` sau build nên không cần khai trong spec).
