@@ -32,6 +32,7 @@ from version import __version__          # noqa: E402
 from updater import sha256_file, _get_json, REPO, BLOBS_TAG  # noqa: E402
 
 DIST = os.path.join(ROOT, "dist", "WakerVoice")
+ISS = os.path.join(ROOT, "WakerVoice.iss")
 
 
 def run(cmd, **kw):
@@ -43,6 +44,30 @@ def build():
     run([os.path.join(ROOT, ".venv", "Scripts", "python.exe"),
          "-m", "PyInstaller",
          os.path.join(ROOT, "WakerVoice.spec"), "--noconfirm", "--clean"], cwd=ROOT)
+
+
+def _find_iscc():
+    """Tìm ISCC.exe (Inno Setup). None nếu chưa cài."""
+    cands = [
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs",
+                     "Inno Setup 6", "ISCC.exe"),
+        r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        r"C:\Program Files\Inno Setup 6\ISCC.exe",
+    ]
+    return next((p for p in cands if p and os.path.exists(p)), None)
+
+
+def build_installer():
+    """Build WakerVoice-v<ver>-setup.exe từ dist/WakerVoice. Trả path, hoặc None
+    nếu chưa cài Inno Setup (release vẫn tiếp tục, chỉ thiếu installer)."""
+    iscc = _find_iscc()
+    if not iscc:
+        print("  ⚠ Inno Setup (ISCC.exe) không thấy -> BỎ QUA installer. "
+              "Cài: winget install JRSoftware.InnoSetup")
+        return None
+    run([iscc, f"/DMyAppVersion={__version__}", ISS])
+    out = os.path.join(ROOT, "dist", f"WakerVoice-v{__version__}-setup.exe")
+    return out if os.path.exists(out) else None
 
 
 def make_manifest():
@@ -140,16 +165,26 @@ def make_zip():
     return out
 
 
-def publish_version(zip_path):
+def publish_version(zip_path, installer_path=None):
     tag = f"v{__version__}"
     manifest_path = os.path.join(DIST, "manifest.json")
-    notes = (f"WakerVoice {tag}. Bản cài mới: tải zip bên dưới, giải nén, chạy WakerVoice.exe.\n"
-             "Bản đã cài (>=1.1.0) sẽ tự đề xuất cập nhật delta.")
+    if installer_path:
+        notes = (f"WakerVoice {tag}. **Cài nhanh:** tải `WakerVoice-v{__version__}-setup.exe` "
+                 "bên dưới rồi chạy — tự cài, tạo lối tắt, có gỡ cài đặt.\n"
+                 "Hoặc bản portable: tải zip, giải nén, chạy WakerVoice.exe.\n"
+                 "Bản đã cài (>=1.1.0) sẽ tự đề xuất cập nhật delta.")
+    else:
+        notes = (f"WakerVoice {tag}. Bản cài mới: tải zip bên dưới, giải nén, chạy WakerVoice.exe.\n"
+                 "Bản đã cài (>=1.1.0) sẽ tự đề xuất cập nhật delta.")
+    assets = [
+        f"{manifest_path}#manifest.json",
+        f"{zip_path}#WakerVoice {tag} (Windows 64-bit, portable zip)",
+    ]
+    if installer_path:
+        assets.insert(0, f"{installer_path}#WakerVoice {tag} Setup (Windows installer)")
     print(f"  tạo release {tag}…")
     run(["gh", "release", "create", tag, "--repo", REPO, "--title", f"WakerVoice {tag}",
-         "--notes", notes, "--latest",
-         f"{manifest_path}#manifest.json",
-         f"{zip_path}#WakerVoice {tag} (Windows 64-bit, cloud)"])
+         "--notes", notes, "--latest"] + assets)
 
 
 def main():
@@ -181,8 +216,11 @@ def main():
     upload_blobs(to_upload)
     print("[4] zip full")
     zip_path = make_zip()
-    print("[5] publish")
-    publish_version(zip_path)
+    print("[5] installer (Inno Setup)")
+    installer_path = build_installer()
+    print(f"    installer: {installer_path or 'BỎ QUA'}")
+    print("[6] publish")
+    publish_version(zip_path, installer_path)
     print("DONE:", f"https://github.com/{REPO}/releases/tag/v{__version__}")
 
 
