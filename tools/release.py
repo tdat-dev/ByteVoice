@@ -40,7 +40,8 @@ def run(cmd, **kw):
 
 
 def build():
-    run([os.path.join(ROOT, ".venv", "Scripts", "pyinstaller.exe"),
+    run([os.path.join(ROOT, ".venv", "Scripts", "python.exe"),
+         "-m", "PyInstaller",
          os.path.join(ROOT, "WakerVoice.spec"), "--noconfirm", "--clean"], cwd=ROOT)
 
 
