@@ -2,7 +2,7 @@
 WakerVoice — STT engine (cloud-only, Groq)
 ======================================
 Push-to-talk: giữ/nhấn phím -> thu âm RAM (16kHz) -> gửi lên Groq
-(whisper-large-v3-turbo) -> gõ tại con trỏ HOẶC copy clipboard.
+(whisper-large-v3) -> gõ tại con trỏ HOẶC copy clipboard.
 NHẸ MÁY: KHÔNG chạy model cục bộ, KHÔNG cần GPU/CUDA. Cần internet + Groq key.
 
 Engine tách rời UI qua callback emit(event, payload):
@@ -36,13 +36,38 @@ _HALLUC_PHRASES = (
     "subscribe", "ủng hộ kênh", "cảm ơn các bạn đã theo dõi",
     "cảm ơn các bạn đã lắng nghe", "hẹn gặp lại", "đừng quên",
     "để không bỏ lỡ những video", "like và đăng ký", "cảm ơn đã xem",
+    "thanks for watching", "please subscribe", "see you in the next video",
+)
+
+# Cụm meta/prompt cũ hay bị Whisper nhại vào transcript (kể cả sau khi đã rút gọn prompt)
+_PROMPT_LEAK_PHRASES = (
+    "Đây là tiếng Việt nói tự nhiên, thường chêm từ tiếng Anh",
+    "Đây là tiếng Việt nói tự nhiên",
+    "thường chêm từ tiếng Anh",
+    "Từ tiếng Anh hay gặp",
+    "tiếng Việt nói tự nhiên, thường chêm",
+    "Ví dụ: Chiều nay có meeting review lại pull request",
+    "mình fix nốt vài bug rồi deploy lên production",
+    "xong gửi feedback qua email cho cả team",
+    "machine learning, deep learning, model",
+    "pull request, mình fix nốt vài bug",
+)
+
+# Whisper hay dump danh sách từ vựng EN ở cuối khi "nhớ" prompt
+_VOCAB_DUMP_RE = re.compile(
+    r"(?:,?\s*(?:meeting|deadline|review|feedback|deploy|release|update|bug|fix|"
+    r"order|ship|budget|KPI|marketing|sale|team|manager|project|laptop|file|"
+    r"folder|AI|machine learning|deep learning|model|pull request)){4,}\.?",
+    re.I,
 )
 
 
 def _is_hallucination(text):
     """True nếu text chỉ là câu outro YouTube quen thuộc (ảo giác / tiếng video lọt mic)."""
     t = text.lower().strip()
-    if len(t) > 90:                      # câu dài thì coi như nói thật, cho qua
+    if not t:
+        return True
+    if len(t) > 120:                      # câu dài thì coi như nói thật, cho qua
         return False
     return any(p in t for p in _HALLUC_PHRASES)
 
@@ -62,6 +87,37 @@ def _is_faithful_refine(original, refined):
     thêm-bớt từ: mọi trường hợp đó đều làm chuỗi từ lệch -> loại, giữ bản gốc.
     Đây là app voice-to-text: output PHẢI là đúng lời đã nói, không bao giờ là câu trả lời."""
     return _word_seq(original) == _word_seq(refined)
+
+
+def _strip_prompt_leak(text, prompt):
+    """Gỡ đoạn Whisper copy từ prompt vào transcript.
+
+    Whisper nhận `prompt` như 'văn bản trước đó' — hay dính/lặp nguyên khối
+    (đặc biệt meta kiểu 'tiếng Việt chêm tiếng Anh' hoặc list từ vựng).
+    Chỉ gỡ cụm dài/meta, KHÔNG gỡ từng từ lẻ (meeting, bug...) để khỏi nuốt lời nói thật.
+    """
+    if not text:
+        return text
+    out = text.strip()
+
+    for phrase in _PROMPT_LEAK_PHRASES:
+        if phrase and len(phrase) >= 12:
+            out = re.sub(re.escape(phrase), " ", out, flags=re.IGNORECASE)
+
+    p = (prompt or "").strip()
+    if len(p) >= 24:
+        # Nguyên khối prompt
+        out = re.sub(re.escape(p), " ", out, flags=re.IGNORECASE)
+        # Từng câu / mệnh đề dài trong prompt
+        for part in re.split(r"[.!?]\s+|\n+|;\s*", p):
+            part = part.strip(" .,;\n\t\"'")
+            if len(part) >= 28:
+                out = re.sub(re.escape(part), " ", out, flags=re.IGNORECASE)
+
+    out = _VOCAB_DUMP_RE.sub("", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    out = out.strip(" \t\r\n,;.-–—")
+    return out
 
 
 # Prompt dọn chính tả: CHỈ thêm dấu/sửa dấu câu, GIỮ NGUYÊN từ (không bịa/đổi/dịch).
@@ -93,16 +149,12 @@ _REFINE_SYS = (
 
 
 # Prompt "mồi" cho Whisper khi người dùng CHƯA tự đặt groq_prompt.
-# Whisper dùng prompt như văn cảnh: có sẵn các từ tiếng Anh viết ĐÚNG chính tả
-# -> khi nghe từ tiếng Anh chêm trong câu tiếng Việt, model GIỮ tiếng Anh thay vì
-# phiên âm ("deadline" chứ không "đét-lai"). Câu ví dụ mô phỏng đúng văn phong nói.
+# QUAN TRỌNG: Whisper coi prompt là "văn bản ngay trước audio" — KHÔNG được
+# viết meta/hướng dẫn ("Đây là tiếng Việt...", "Từ hay gặp: ...") vì model sẽ
+# nhại nguyên câu đó ra transcript. Chỉ đưa 1–2 câu nói tự nhiên có loanword EN.
 _CODESWITCH_PROMPT = (
-    "Đây là tiếng Việt nói tự nhiên, thường chêm từ tiếng Anh. "
-    "Ví dụ: Chiều nay có meeting review lại pull request, mình fix nốt vài bug "
-    "rồi deploy lên production, xong gửi feedback qua email cho cả team. "
-    "Từ tiếng Anh hay gặp: meeting, deadline, review, feedback, deploy, release, "
-    "update, bug, fix, order, ship, budget, KPI, marketing, sale, team, manager, "
-    "project, laptop, file, folder, AI, machine learning, deep learning, model."
+    "Chiều nay có meeting review pull request, mình fix bug rồi deploy. "
+    "Gửi feedback qua email về deadline và budget."
 )
 
 
@@ -144,6 +196,9 @@ class SttEngine:
         self.recording = False
         self.kb = keyboard.Controller()
         self._listener = None
+        self._watch_stop = threading.Event()
+        self._watch = None
+        self._listener_lock = threading.Lock()
 
         # Cấu hình runtime (UI có thể đổi)
         self.language = "auto"           # đọc lại từ config bên dưới
@@ -172,17 +227,60 @@ class SttEngine:
         self.emit("device", self._label())
         self.emit("model", "ready")
         self.emit("state", "idle")
-        self._listener = keyboard.Listener(
-            on_press=self._on_press, on_release=self._on_release
-        )
-        self._listener.start()
+        self._start_listener()
+        # pynput hook hay chết im sau sleep / lock màn hình / UAC / một số overlay
+        # toàn màn — watchdog gắn lại mà không cần tắt-bật app.
+        self._watch_stop.clear()
+        self._watch = threading.Thread(target=self._listener_watchdog, daemon=True)
+        self._watch.start()
+
+    def _start_listener(self):
+        """(Re)start pynput keyboard listener — an toàn gọi lại từ watchdog."""
+        with self._listener_lock:
+            old = self._listener
+            self._listener = None
+            if old is not None:
+                try:
+                    old.stop()
+                except Exception:
+                    pass
+            self._hotkey_down = False
+            lis = keyboard.Listener(
+                on_press=self._on_press, on_release=self._on_release
+            )
+            lis.start()
+            self._listener = lis
+
+    def _listener_watchdog(self):
+        """Mỗi 2s: nếu hook bàn phím đã chết thì gắn lại."""
+        while not self._watch_stop.is_set():
+            self._watch_stop.wait(2.0)
+            if self._watch_stop.is_set():
+                break
+            lis = self._listener
+            if lis is None:
+                continue
+            alive = bool(getattr(lis, "running", False))
+            if alive:
+                continue
+            print("[hotkey] listener chết — restart", file=sys.stderr, flush=True)
+            try:
+                self._start_listener()
+            except Exception as e:
+                print(f"[hotkey] restart lỗi: {e}", file=sys.stderr, flush=True)
 
     def _label(self):
         return "Groq·" + self.groq_model.replace("whisper-", "").replace("-v3", "")
 
     def shutdown(self):
-        if self._listener is not None:
-            self._listener.stop()
+        self._watch_stop.set()
+        with self._listener_lock:
+            if self._listener is not None:
+                try:
+                    self._listener.stop()
+                except Exception:
+                    pass
+                self._listener = None
         self._safe_close_stream()
 
     # ----------------------- Cấu hình -----------------------
@@ -240,24 +338,38 @@ class SttEngine:
             self.emit("level", round(self._cur_level, 3))
             time.sleep(0.045)
 
+    def _open_input_stream(self):
+        return sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="float32",
+            latency="low",                 # giảm độ trễ khởi động stream
+            callback=self._audio_callback,
+        )
+
     def _start_recording(self):
         if self.recording:
             return
         # Xoá queue TRƯỚC khi start, nếu không sẽ vứt mất block âm thanh đầu (mất chữ đầu)
         with self.audio_queue.mutex:
             self.audio_queue.queue.clear()
-        try:
-            self.stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="float32",
-                latency="low",                 # giảm độ trễ khởi động stream
-                callback=self._audio_callback,
-            )
-            self.stream.start()
-        except Exception as e:
-            self.emit("error", f"Không mở được micro: {e}")
-            self.stream = None
+
+        # Sau sleep/idle lâu, driver mic đôi khi từ chối lần mở đầu -> thử lại 1 lần
+        last_err = None
+        for attempt in range(2):
+            try:
+                self.stream = self._open_input_stream()
+                self.stream.start()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                self.stream = None
+                print(f"[Audio] open fail attempt={attempt + 1}: {e}",
+                      file=sys.stderr, flush=True)
+                time.sleep(0.3)
+        if last_err is not None:
+            self.emit("error", f"Không mở được micro: {last_err}")
             return
 
         self.recording = True
@@ -301,6 +413,10 @@ class SttEngine:
             self.stream = None
 
     # ------------------- Dịch (Groq) + xuất chữ -------------------
+    def _active_prompt(self):
+        """Prompt gửi Whisper: user custom nếu có, không thì mồi code-switch ngắn."""
+        return (self.groq_prompt or "").strip() or _CODESWITCH_PROMPT
+
     def _transcribe_and_emit(self, audio):
         # Bỏ qua clip gần như im lặng / chỉ có tiếng thở -> khỏi tốn quota + tránh ảo giác
         peak = float(np.max(np.abs(audio)))
@@ -332,6 +448,13 @@ class SttEngine:
             self._transcribing = False
             del audio                              # giải phóng âm thanh khỏi RAM ngay
 
+        # Gỡ prompt rò + ảo giác truớc khi refine/xuất
+        raw = text
+        text = _strip_prompt_leak(text, self._active_prompt())
+        if text != raw:
+            print(f"[stt] stripped prompt-leak: {raw!r} -> {text!r}",
+                  file=sys.stderr, flush=True)
+
         halluc = _is_hallucination(text)
         print(f"[stt] lang={lang!r} text={text!r} halluc={halluc}",
               file=sys.stderr, flush=True)
@@ -343,6 +466,11 @@ class SttEngine:
         is_vi = lang.startswith("vi") or self.language == "vi"
         if self.refine and is_vi:              # giữ trạng thái "transcribing" lúc dọn
             text = self._refine_text(text)
+            # Refine đôi khi "làm đẹp" bằng cách chèn lại cụm hệ thống — quét lại
+            text = _strip_prompt_leak(text, self._active_prompt())
+            if not text or _is_hallucination(text):
+                self.emit("state", "idle")
+                return
 
         self._deliver(text)
         self.emit("result", {"text": text, "time": time.strftime("%H:%M")})
@@ -385,8 +513,8 @@ class SttEngine:
             body += _field("language", self.language)
         body += _field("temperature", "0")
         body += _field("response_format", "verbose_json")   # kèm ngôn ngữ đã nhận
-        # Prompt của user nếu có, ngược lại dùng mồi code-switch để giữ từ tiếng Anh.
-        prompt = (self.groq_prompt or "").strip() or _CODESWITCH_PROMPT
+        # Prompt ngắn kiểu "câu nói trước" — KHÔNG meta/hướng dẫn (dễ bị nhại).
+        prompt = self._active_prompt()
         if prompt:
             body += _field("prompt", prompt)
         body += (
@@ -419,13 +547,15 @@ class SttEngine:
         """Nhờ LLM Groq dọn dấu/chính tả tiếng Việt. MỌI lỗi -> trả text gốc
         (không bao giờ để bước dọn làm hỏng/chậm treo kết quả)."""
         import json as _json
-        import re
+        import re as _re
         import urllib.request
         try:
+            # Form dài: cấp token đủ để không cắt giữa chừng (cắt -> faithful fail -> bỏ refine)
+            max_tok = min(4096, max(256, len(text) // 2 + 64))
             body = _json.dumps({
                 "model": self.refine_model,
                 "temperature": 0,
-                "max_tokens": 600,
+                "max_tokens": max_tok,
                 "messages": [
                     {"role": "system", "content": _REFINE_SYS},
                     {"role": "user", "content": text},
@@ -440,10 +570,10 @@ class SttEngine:
                     "User-Agent": "WakerVoice/1.0",
                 },
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 data = _json.loads(resp.read().decode("utf-8"))
             out = data["choices"][0]["message"]["content"] or ""
-            out = re.sub(r"<think>.*?</think>", "", out, flags=re.S)  # model reasoning (nếu có)
+            out = _re.sub(r"<think>.*?</think>", "", out, flags=_re.S)  # model reasoning (nếu có)
             out = out.strip().strip('"').strip()
             # LỚP CHỐNG TRẢ-LỜI/INJECTION (tất định): refine CHỈ được thêm dấu.
             # Nếu chuỗi từ (bỏ dấu, thường hoá) không khớp bản gốc -> LLM đã trả lời/
@@ -482,14 +612,14 @@ class SttEngine:
         # Toggle: chỉ lật ở lần nhấn ĐẦU, bỏ qua auto-repeat khi giữ phím
         if key in self.hotkey_keys and not self._hotkey_down:
             self._hotkey_down = True
-            
+
             # Chặn menu Alt của Windows bằng cách giả lập nhấn phím rỗng (vk 0xFF)
             # khi phím Alt đang được giữ. Tránh bị mất focus và mất chữ đầu tiên.
             try:
                 self.kb.tap(keyboard.KeyCode.from_vk(0xFF))
             except Exception:
                 pass
-                
+
             self.toggle()
 
     def _on_release(self, key):
