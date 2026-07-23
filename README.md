@@ -1,22 +1,27 @@
 # WakerVoice
 
-**Push-to-Talk Speech-to-Text** chạy hoàn toàn offline. Giữ một phím tắt toàn cục,
-nói, nhả phím — chữ tiếng Việt tự chèn vào nơi con trỏ đang đứng. Không gọi bất kỳ
-API cloud/LLM nào.
+**Push-to-Talk Speech-to-Text** chạy hoàn toàn trên cloud (Groq / OpenAI / custom).
+Giữ một phím tắt toàn cục, nói, nhả phím — chữ tiếng Việt tự chèn vào nơi
+con trỏ đang đứng.
 
 > Tên *WakerVoice* lấy từ **sotto voce** (nói rất khẽ) — đúng tinh thần "nói thầm ra chữ".
 
-Giao diện là một **pill** nổi, siêu nhẹ, vẽ bằng Qt (PySide6 / QPainter). Backend nhận
-dạng dùng **faster-whisper** cục bộ.
+Giao diện là một **pill** nổi, siêu nhẹ, vẽ bằng Qt (PySide6 / QPainter). Backend
+STT qua **multi-provider cloud API** (không cần GPU/model cục bộ).
 
 ## Tính năng
 
-- **Offline 100%** — audio không rời khỏi máy.
+- **Cloud multi-provider** — Groq (mặc định, miễn phí nhanh), OpenAI
+  (`gpt-4o-transcribe`), hoặc bất kỳ endpoint OpenAI-compatible nào (Together,
+  Fireworks, self-hosted). Đổi trong menu khay hoặc **Cài đặt…**.
 - **Gõ tại con trỏ** hoặc **Clipboard**.
+- **Lịch sử chép** — mỗi lần chép được lưu JSONL; menu "Lịch sử" cho phép
+  gõ lại / copy lại 20 bản gần nhất.
+- **Snippets / text-expansion** — đặt trigger `@@date` → ngày hiện tại, `@@sign`
+  → chữ ký mặc định. Editor trong menu "Snippets · text-expansion…".
 - **Icon theo app đang focus** — pill tự nhận diện ứng dụng bạn đang gõ vào
   (Chrome, VS Code, Word…) và hiển thị icon của app đó thay cho mic. Khi đang
   dịch sẽ hiện spinner; không lấy được icon thì fallback về mic.
-- **Tự nhận GPU** — có CUDA → `int8_float16`, không có → CPU `int8`.
 - **Tự cập nhật (delta)** — app kiểm tra GitHub lúc khởi động; có bản mới thì hỏi
   rồi chỉ tải **các file đã đổi** (đổi code ≈ vài chục MB thay vì cả gói), tự thay
   và khởi động lại. Cũng có menu tray "Kiểm tra cập nhật".
@@ -26,9 +31,6 @@ dạng dùng **faster-whisper** cục bộ.
 ```bash
 pip install -r requirements.txt
 ```
-
-> Lần chạy đầu sẽ tự tải weights mô hình (small ≈ 460MB) về cache — cần mạng một
-> lần, sau đó offline hoàn toàn.
 
 ## Chạy
 
@@ -41,10 +43,11 @@ nên mở terminal **bằng quyền Administrator**.
 
 ## Dùng
 
-1. Giữ **Right Alt** (đổi được trong Cài đặt) → pill chuyển vàng, sóng nở theo âm
-   lượng thật khi bạn nói.
+1. Giữ **Right Alt** (đổi được trong **Cài đặt…** → tab Phím tắt) → pill chuyển
+   vàng, sóng nở theo âm lượng thật khi bạn nói.
 2. Nhả phím → spinner quay (đang dịch) → chữ tự chèn tại con trỏ.
 3. Click trái lên pill (hoặc icon tray) để bật/tắt nói; kéo để di chuyển pill.
+4. Menu tray → **Cài đặt…** để đổi provider, nhập API key, chỉnh snippets.
 
 ## Đóng gói (.exe)
 
@@ -59,21 +62,24 @@ Kết quả ở `dist/WakerVoice/WakerVoice.exe`. Icon lấy từ `icon.ico`.
 
 ```
 wakervoice/
-├── app_qt.py         # pill Qt (PySide6) + tray + nhận diện icon app — bản chính
-├── app.py            # bản pywebview cũ (giữ tham khảo)
-├── engine.py         # STT engine: hotkey, thu âm RAM, faster-whisper, xuất chữ
-├── icon.svg          # logo nguồn (waveform amber)
-├── icon.ico / icon.png
-├── WakerVoice.spec       # cấu hình PyInstaller
+├── app_qt.py          # pill Qt (PySide6) + tray + menu lịch sử + snippets editor
+├── engine.py          # STT engine: hotkey, thu âm RAM, refine, snippets, history
+├── config.py          # config.json (multi-provider) — KHÔNG lọc key
+├── history.py         # JSONL append-only
+├── snippets.py        # text-expansion với placeholder runtime
+├── providers.py       # Groq / OpenAI / OpenAI-compatible
+├── settings_ui.py     # QDialog cài đặt tổng hợp (5 tab)
+├── icon.svg / icon.ico / icon.png
+├── WakerVoice.spec        # cấu hình PyInstaller
 ├── requirements.txt
-└── web/              # frontend cho bản pywebview cũ
+└── tests/                 # unit + e2e (không cần mạng)
 ```
 
 ## Tuỳ chỉnh nhanh
 
-- **Mô hình**: tiny/base/small/medium (đổi sẽ nạp lại).
-- **Phím tắt**: Right/Left Alt, Right Ctrl, F8, F9, Pause.
-- **Ép CPU**: đặt biến môi trường `WAKERVOICE_DEVICE=cpu`.
+- **Provider & model**: Groq / OpenAI / Custom — menu "Nhà cung cấp STT" và
+  "Chất lượng nhận dạng".
+- **Phím tắt**: Right/Left Alt, Right Ctrl, F8, F9, Pause — **Cài đặt…** → Phím tắt.
 
 ## Bản quyền
 

@@ -12,6 +12,8 @@ import threading
 
 _LOCK = threading.Lock()
 
+# Schema các key "biết tên" mà DEFAULTS định nghĩa. Tất cả key khác (provider,
+# providers, model, custom_providers, ...) đều được giữ nguyên qua load/save.
 DEFAULTS = {
     "language": "auto",                       # "auto" (Việt+Anh) | "vi" | "en"
     "groq_api_key": "",
@@ -40,13 +42,20 @@ def _config_path():
 
 
 def load():
-    """Trả về cấu hình đầy đủ (mặc định + đã lưu + override từ env GROQ_API_KEY)."""
+    """Trả về cấu hình đầy đủ (mặc định + đã lưu + override từ env GROQ_API_KEY).
+
+    QUAN TRỌNG: giữ TẤT CẢ key từ file lưu (kể cả key không có trong DEFAULTS —
+    vd 'provider', 'providers', 'model', 'custom_providers'). DEFAULTS chỉ để
+    fallback khi key thiếu.
+    """
     cfg = dict(DEFAULTS)
     try:
         with open(_config_path(), encoding="utf-8") as f:
             saved = json.load(f)
         if isinstance(saved, dict):
-            cfg.update({k: saved[k] for k in DEFAULTS if k in saved})
+            # merge: file lưu đè mặc định, nhưng vẫn giữ DEFAULTS cho key thiếu
+            for k, v in saved.items():
+                cfg[k] = v
     except Exception:
         pass
     env_key = os.environ.get("GROQ_API_KEY")
@@ -56,12 +65,17 @@ def load():
 
 
 def save(cfg):
-    """Ghi cấu hình (chỉ các khoá hợp lệ). Bỏ qua nếu ghi lỗi."""
-    data = {k: cfg.get(k, DEFAULTS[k]) for k in DEFAULTS}
+    """Ghi cấu hình. Giữ TẤT CẢ key user truyền vào (không lọc theo DEFAULTS)."""
+    if not isinstance(cfg, dict):
+        return {}
+    # Bù DEFAULTS cho key thiếu (để file luôn đầy đủ)
+    out = dict(DEFAULTS)
+    for k, v in cfg.items():
+        out[k] = v
     with _LOCK:
         try:
             with open(_config_path(), "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(out, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-    return data
+    return out

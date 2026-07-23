@@ -14,6 +14,58 @@
     {
       "id": "lmrasdfw221",
       "title": "Done",
+      "cards": [
+        {
+          "id": "cmrrwuraw2",
+          "title": "Fix WakerVoice: prompt leak + hotkey chết sau idle",
+          "desc": "3 bug: (1) hotkey/STT chết khi máy idle lâu hoặc overlay đè — pynput listener không restart; (2) Whisper prompt code-switch rò vào output (câu về VI chêm EN); (3) ảo giác từ. Sửa trong engine.py.",
+          "labels": [
+            "red"
+          ],
+          "due": null,
+          "checklist": [
+            {
+              "id": "imrrwuraw3",
+              "text": "Rewrite Whisper prompt + strip prompt leak",
+              "done": false
+            },
+            {
+              "id": "imrrwuraw4",
+              "text": "Watchdog restart keyboard listener + audio retry",
+              "done": false
+            },
+            {
+              "id": "imrrwuraw5",
+              "text": "Mở rộng lọc ảo giác / vocab dump",
+              "done": false
+            },
+            {
+              "id": "imrrwuraw6",
+              "text": "Smoke-check logic bằng unit-style asserts",
+              "done": false
+            }
+          ],
+          "assignee": "grok",
+          "done": {
+            "repoRoot": "D:\\Sottra",
+            "files": [
+              ".maestro/board.json",
+              "engine.py",
+              ".maestro/fleet.json",
+              "WakerVoice.jpeg",
+              "icon_b64.txt",
+              "patch_app.py"
+            ],
+            "summary": "engine.py: watchdog hotkey + audio retry; rút gọn Whisper prompt; strip prompt-leak/ảo giác; max_tokens refine theo độ dài form.",
+            "at": 1784472648420,
+            "by": "grok"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lmrrwuraw1",
+      "title": "Proposed",
       "cards": []
     }
   ]

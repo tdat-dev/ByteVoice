@@ -1,15 +1,16 @@
 """
-WakerVoice — STT engine (cloud-only, Groq)
-======================================
-Push-to-talk: giữ/nhấn phím -> thu âm RAM (16kHz) -> gửi lên Groq
-(whisper-large-v3) -> gõ tại con trỏ HOẶC copy clipboard.
-NHẸ MÁY: KHÔNG chạy model cục bộ, KHÔNG cần GPU/CUDA. Cần internet + Groq key.
+WakerVoice — STT engine (cloud-only, multi-provider)
+=================================================
+Push-to-talk: giữ/nhấn phím -> thu âm RAM (16kHz) -> gửi lên provider STT
+đang chọn (Groq / OpenAI / OpenAI-compatible) -> gõ tại con trỏ HOẶC copy
+clipboard.
+NHẸ MÁY: KHÔNG chạy model cục bộ, KHÔNG cần GPU/CUDA. Cần internet + API key.
 
 Engine tách rời UI qua callback emit(event, payload):
     emit("model",  "ready")                 # giữ để tương thích UI (không còn nạp model)
     emit("state",  "idle" | "recording" | "transcribing")
     emit("level",  float 0..1)              # mức âm thanh realtime
-    emit("result", {"text": str, "time": "HH:MM"})
+    emit("result", {"text": str, "time": "HH:MM", "lang": "..."})
     emit("error",  str)
     emit("device", "Groq·turbo")
 """
@@ -26,6 +27,9 @@ import sounddevice as sd
 from pynput import keyboard
 
 import config
+import history
+import snippets
+import providers as stt_providers
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -207,14 +211,21 @@ class SttEngine:
         self.hotkey_keys = HOTKEY_ALIASES[self.hotkey_name]
         self._hotkey_down = False        # chống auto-repeat: chỉ toggle ở lần nhấn đầu
 
-        # Groq (đám mây)
+        # STT provider (mặc định Groq để tương thích bản cũ)
         _c = config.load()
         self.language = _c["language"]
-        self.groq_api_key = _c["groq_api_key"]
-        self.groq_model = _c["groq_model"]
-        self.groq_prompt = _c["groq_prompt"]
-        self.refine = _c["refine"]              # dọn chính tả bằng LLM sau khi chép
-        self.refine_model = _c["refine_model"]
+        self.provider_id = _c.get("provider") or "groq"
+        self.provider = stt_providers.get_provider(self.provider_id)
+        self.api_key = stt_providers.get_api_key(self.provider_id) \
+            or _c.get("groq_api_key", "")
+        self.model = _c.get("model") or self.provider["default_model"]
+        self.groq_prompt = _c.get("groq_prompt", "")
+        self.refine = _c.get("refine", True)
+        self.refine_model = _c.get("refine_model") \
+            or self.provider.get("default_refine_model", "")
+        # Alias cũ (back-compat cho UI hiện tại)
+        self.groq_api_key = self.api_key
+        self.groq_model = self.model
 
         self._cur_level = 0.0
         self._pump = None
@@ -270,7 +281,11 @@ class SttEngine:
                 print(f"[hotkey] restart lỗi: {e}", file=sys.stderr, flush=True)
 
     def _label(self):
-        return "Groq·" + self.groq_model.replace("whisper-", "").replace("-v3", "")
+        """Tên ngắn cho tooltip: '<provider>·<model ngắn>'."""
+        short = self.model
+        short = short.replace("whisper-", "").replace("gpt-4o-", "gpt-")
+        short = short.replace("-v3", "")
+        return f"{self.provider['display_name'].split()[0]}·{short}"
 
     def shutdown(self):
         self._watch_stop.set()
@@ -302,19 +317,77 @@ class SttEngine:
             config.save(cfg)
 
     def set_groq_key(self, key):
-        """Lưu Groq API key (rỗng = xoá)."""
-        self.groq_api_key = (key or "").strip()
+        """Back-compat: cập nhật key cho provider hiện tại (alias set_api_key)."""
+        self.set_api_key(key)
+
+    def set_api_key(self, key):
+        """Lưu API key cho provider hiện tại."""
+        self.api_key = (key or "").strip()
+        self.groq_api_key = self.api_key
         cfg = config.load()
-        cfg["groq_api_key"] = self.groq_api_key
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+        slot = providers.get(self.provider_id)
+        if not isinstance(slot, dict):
+            slot = {}
+        slot["api_key"] = self.api_key
+        providers[self.provider_id] = slot
+        cfg["providers"] = providers
+        # back-compat
+        if self.provider_id == "groq":
+            cfg["groq_api_key"] = self.api_key
         config.save(cfg)
 
     def set_groq_model(self, model):
-        """Đổi model Groq (large-v3 = chuẩn hơn, turbo = nhanh hơn), lưu cấu hình."""
+        """Back-compat: cập nhật model cho provider hiện tại (alias set_model)."""
+        self.set_model(model)
+
+    def set_model(self, model):
+        """Đổi model STT (theo provider hiện tại), lưu cấu hình."""
+        self.model = model
         self.groq_model = model
         cfg = config.load()
-        cfg["groq_model"] = model
+        cfg["model"] = model
+        # back-compat
+        if self.provider_id == "groq":
+            cfg["groq_model"] = model
         config.save(cfg)
         self.emit("device", self._label())
+
+    def set_provider(self, pid):
+        """Đổi provider STT. Trả dict provider mới hoặc None nếu pid không tồn tại."""
+        new = stt_providers.get_provider(pid)
+        if not new:
+            return None
+        old_id = self.provider_id
+        self.provider_id = new["id"]
+        self.provider = new
+        # Lấy key đã lưu cho provider mới (KHÔNG fallback key cũ — key cũ
+        # thuộc provider khác, dùng chung sẽ ra lỗi 401).
+        self.api_key = stt_providers.get_api_key(new["id"])
+        self.groq_api_key = self.api_key
+        self.model = new["default_model"]
+        self.groq_model = self.model
+        self.refine_model = new.get("default_refine_model", self.refine_model)
+        cfg = config.load()
+        cfg["provider"] = new["id"]
+        cfg["model"] = self.model
+        cfg["refine_model"] = self.refine_model
+        config.save(cfg)
+        self.emit("device", self._label())
+        # Nếu đổi provider -> user cần nhập key mới (nếu chưa có)
+        if not self.api_key and old_id != new["id"]:
+            self.emit("error",
+                      f"Chưa có API key cho {new['display_name']} — vào menu khay để nhập")
+        return new
+
+    def set_refine_model(self, model):
+        """Đổi model refine (cho provider hiện tại)."""
+        self.refine_model = model
+        cfg = config.load()
+        cfg["refine_model"] = model
+        config.save(cfg)
 
     def set_refine(self, on):
         """Bật/tắt dọn chính tả bằng LLM, lưu cấu hình."""
@@ -429,8 +502,8 @@ class SttEngine:
             self.emit("state", "idle")
             return
 
-        if not self.groq_api_key:
-            self.emit("error", "Chưa có Groq API key — vào menu khay để nhập")
+        if not self.api_key:
+            self.emit("error", f"Chưa có API key cho {self.provider['display_name']} — vào menu khay để nhập")
             self.emit("state", "idle")
             return
 
@@ -438,10 +511,10 @@ class SttEngine:
         self._transcribing = True
         text, lang = "", ""
         try:
-            text, lang = self._transcribe_groq(audio)
+            text, lang = self._transcribe(audio)
         except Exception as e:
-            print(f"[groq] lỗi: {e}", file=sys.stderr, flush=True)
-            self.emit("error", f"Groq lỗi: {e}")
+            print(f"[stt] {self.provider_id} lỗi: {e}", file=sys.stderr, flush=True)
+            self.emit("error", f"{self.provider['display_name'].split()[0]} lỗi: {e}")
             self.emit("state", "idle")
             return
         finally:
@@ -464,7 +537,7 @@ class SttEngine:
 
         # Dọn dấu bằng LLM CHỈ cho tiếng Việt (prompt tiếng Việt sẽ phá text tiếng Anh)
         is_vi = lang.startswith("vi") or self.language == "vi"
-        if self.refine and is_vi:              # giữ trạng thái "transcribing" lúc dọn
+        if self.refine and is_vi and self.provider.get("supports_refine", True):
             text = self._refine_text(text)
             # Refine đôi khi "làm đẹp" bằng cách chèn lại cụm hệ thống — quét lại
             text = _strip_prompt_leak(text, self._active_prompt())
@@ -472,113 +545,61 @@ class SttEngine:
                 self.emit("state", "idle")
                 return
 
+        # Áp dụng snippets (text-expansion) SAU refine.
+        expanded = snippets.expand(text)
+        if expanded != text:
+            print(f"[snippets] expanded: {text!r} -> {expanded!r}",
+                  file=sys.stderr, flush=True)
+            text = expanded
+
+        # Ghi lịch sử (luôn, bất kể output_mode là type hay clipboard).
+        try:
+            history.append(
+                text,
+                language=self.language or "auto",
+                refine=bool(self.refine and is_vi),
+                model=self.model,
+                duration_s=dur,
+            )
+        except Exception:
+            pass
+
         self._deliver(text)
-        self.emit("result", {"text": text, "time": time.strftime("%H:%M")})
+        self.emit("result", {"text": text, "time": time.strftime("%H:%M"),
+                             "lang": lang})
         self.emit("state", "idle")
 
-    def _transcribe_groq(self, audio):
-        """Gửi audio lên Groq (OpenAI-compatible) -> text. Raise nếu lỗi mạng/API.
+    def _transcribe(self, audio):
+        """Gửi audio lên provider STT đang chọn. Trả (text, lang). Raise nếu lỗi.
 
-        Dùng stdlib (urllib + wave) để chạy được cả trong bản đóng gói PyInstaller
-        mà không cần thêm phụ thuộc (requests/httpx/groq SDK)."""
-        import io
-        import wave
-        import json as _json
-        import uuid
-        import urllib.request
-
-        # float32 [-1,1] -> WAV PCM 16-bit mono 16kHz
-        pcm = np.clip(audio, -1.0, 1.0)
-        pcm16 = (pcm * 32767.0).astype("<i2").tobytes()
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(SAMPLE_RATE)
-            w.writeframes(pcm16)
-        wav_bytes = buf.getvalue()
-
-        boundary = "----WakerVoiceBoundary" + uuid.uuid4().hex
-
-        def _field(name, value):
-            return (
-                f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
-                f"{value}\r\n"
-            ).encode("utf-8")
-
-        body = b""
-        body += _field("model", self.groq_model)
-        if self.language and self.language != "auto":   # auto -> để Whisper tự nhận ngôn ngữ
-            body += _field("language", self.language)
-        body += _field("temperature", "0")
-        body += _field("response_format", "verbose_json")   # kèm ngôn ngữ đã nhận
-        # Prompt ngắn kiểu "câu nói trước" — KHÔNG meta/hướng dẫn (dễ bị nhại).
-        prompt = self._active_prompt()
-        if prompt:
-            body += _field("prompt", prompt)
-        body += (
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
-            "Content-Type: audio/wav\r\n\r\n"
-        ).encode("utf-8")
-        body += wav_bytes + b"\r\n"
-        body += f"--{boundary}--\r\n".encode("utf-8")
-
-        req = urllib.request.Request(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {self.groq_api_key}",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                # Cloudflare của Groq chặn UA mặc định "Python-urllib" (lỗi 1010) -> đặt UA riêng
-                "User-Agent": "WakerVoice/1.0",
-                "Accept": "application/json",
-            },
+        Dùng providers.transcribe (multipart + stdlib) — chạy được cả trong
+        bản đóng gói PyInstaller mà không cần thêm phụ thuộc.
+        """
+        return stt_providers.transcribe(
+            audio,
+            provider=self.provider,
+            api_key=self.api_key,
+            model=self.model,
+            language=self.language or "auto",
+            prompt=self._active_prompt(),
+            timeout=60,
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
-        text = (data.get("text") or "").strip()
-        lang = (data.get("language") or "").lower()   # vd "vietnamese" / "english"
-        return text, lang
 
     def _refine_text(self, text):
-        """Nhờ LLM Groq dọn dấu/chính tả tiếng Việt. MỌI lỗi -> trả text gốc
-        (không bao giờ để bước dọn làm hỏng/chậm treo kết quả)."""
-        import json as _json
-        import re as _re
-        import urllib.request
+        """Nhờ LLM (provider hiện tại) dọn dấu/chính tả tiếng Việt. MỌI lỗi ->
+        trả text gốc (không bao giờ để bước dọn làm hỏng/chậm treo kết quả)."""
         try:
-            # Form dài: cấp token đủ để không cắt giữa chừng (cắt -> faithful fail -> bỏ refine)
-            max_tok = min(4096, max(256, len(text) // 2 + 64))
-            body = _json.dumps({
-                "model": self.refine_model,
-                "temperature": 0,
-                "max_tokens": max_tok,
-                "messages": [
-                    {"role": "system", "content": _REFINE_SYS},
-                    {"role": "user", "content": text},
-                ],
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                "https://api.groq.com/openai/v1/chat/completions",
-                data=body, method="POST",
-                headers={
-                    "Authorization": f"Bearer {self.groq_api_key}",
-                    "Content-Type": "application/json",
-                    "User-Agent": "WakerVoice/1.0",
-                },
+            out = stt_providers.refine(
+                text,
+                provider=self.provider,
+                api_key=self.api_key,
+                model=self.refine_model,
+                system_prompt=_REFINE_SYS,
+                timeout=30,
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = _json.loads(resp.read().decode("utf-8"))
-            out = data["choices"][0]["message"]["content"] or ""
-            out = _re.sub(r"<think>.*?</think>", "", out, flags=_re.S)  # model reasoning (nếu có)
-            out = out.strip().strip('"').strip()
             # LỚP CHỐNG TRẢ-LỜI/INJECTION (tất định): refine CHỈ được thêm dấu.
             # Nếu chuỗi từ (bỏ dấu, thường hoá) không khớp bản gốc -> LLM đã trả lời/
-            # dịch/thêm-bớt từ -> LOẠI, giữ nguyên lời đã nói. App voice-to-text:
-            # output luôn là lời nói, KHÔNG bao giờ là câu trả lời.
+            # dịch/thêm-bớt từ -> LOẠI, giữ nguyên lời đã nói.
             if not out or not _is_faithful_refine(text, out):
                 return text
             return out

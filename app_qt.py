@@ -52,6 +52,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtSvg import QSvgRenderer
 
 from engine import SttEngine
+import history as hist_mod
+import providers as stt_providers
+import settings_ui
 
 # ---------- hằng số thiết kế ----------
 # Canvas trong suốt cố định; capsule tự nở/thu bên trong (không resize cửa sổ -> không giật).
@@ -177,11 +180,13 @@ class Pill(QWidget):
                     f"Đã tạo {len(made)} lối tắt & bật khởi động cùng Windows. "
                     "Tắt trong menu khay nếu không muốn.", 7000))
 
-        # Lần đầu chưa có Groq key -> nhắc (app cloud-only, cần key mới nói được)
-        if not self.engine.groq_api_key:
+        # Lần đầu chưa có API key -> nhắc (app cloud-only, cần key mới nói được)
+        if not self.engine.api_key:
+            prov = self.engine.provider
+            prov_short = prov["display_name"].split()[0]
             QTimer.singleShot(1500, lambda: self._notify(
-                "Cần Groq API key (miễn phí ở console.groq.com). "
-                "Chuột phải icon khay → Nhập Groq API key.", 8000))
+                f"Cần {prov_short} API key. "
+                f"Chuột phải icon khay → Nhập {prov_short} API key.", 8000))
 
     # ---------------- vị trí ----------------
     def _place_bottom_center(self):
@@ -232,14 +237,14 @@ class Pill(QWidget):
             a.setCheckable(True)
         self._refresh_lang_menu()
 
-        # Chất lượng nhận dạng: large-v3 (chuẩn hơn) hoặc turbo (nhanh hơn)
-        q = self.menu.addMenu("Chất lượng nhận dạng")
-        self.act_accurate = q.addAction(
-            "Chính xác · large-v3", lambda: self._set_model("whisper-large-v3"))
-        self.act_fast = q.addAction(
-            "Nhanh · turbo", lambda: self._set_model("whisper-large-v3-turbo"))
-        self.act_accurate.setCheckable(True)
-        self.act_fast.setCheckable(True)
+        # Chất lượng nhận dạng: model động theo provider hiện tại
+        self.quality_menu = self.menu.addMenu("Chất lượng nhận dạng")
+        self._model_actions = []
+        for m in self.engine.provider.get("models") or []:
+            act = self.quality_menu.addAction(m, lambda mm=m: self._set_model(mm))
+            act.setCheckable(True)
+            act.setData(m)
+            self._model_actions.append(act)
         self._refresh_model_menu()
 
         # Dọn dấu/chính tả tiếng Việt bằng LLM sau khi chép (+~0.5s)
@@ -270,6 +275,20 @@ class Pill(QWidget):
         if not updater.is_frozen():
             self.check_action.setVisible(False)   # dev mode: không có gì để thay
         self.menu.addSeparator()
+
+        # ----------------------- Tính năng mới -----------------------
+        # Nhà cung cấp STT (Groq / OpenAI / custom OpenAI-compatible)
+        self._build_provider_menu()
+        # Lịch sử chép (replay / copy)
+        self._build_history_menu()
+        # Snippets (mở editor)
+        self.menu.addAction("Snippets · text-expansion…", self._open_snippets_editor)
+        self.menu.addSeparator()
+
+        # Cài đặt (QDialog tổng hợp) — đặt SAU các mục hay dùng.
+        self.menu.addAction("Cài đặt…", self._open_settings)
+        self.menu.addSeparator()
+
         self.menu.addAction("Thoát", self._quit)
         self.tray = QSystemTrayIcon(self._make_icon(), self)
         self.tray.setToolTip("WakerVoice — voice to text")
@@ -298,16 +317,18 @@ class Pill(QWidget):
 
     # ---------------- chất lượng nhận dạng (model Groq) ----------------
     def _refresh_model_menu(self):
-        turbo = self.engine.groq_model.endswith("turbo")
-        self.act_accurate.setChecked(not turbo)
-        self.act_fast.setChecked(turbo)
+        """Check đúng model hiện tại (theo provider đang chọn)."""
+        m = self.engine.model
+        for a in self._model_actions:
+            a.setChecked(a.data() == m)
 
     def _set_model(self, model):
-        self.engine.set_groq_model(model)
+        self.engine.set_model(model)
         self._refresh_model_menu()
-        self._notify("Nhận dạng: "
-                     + ("Chính xác (large-v3)" if not model.endswith("turbo")
-                        else "Nhanh (turbo)"), 2500)
+        # Tên ngắn hiển thị
+        short = model.replace("whisper-", "").replace("gpt-4o-", "gpt-")
+        short = short.replace("-v3", "")
+        self._notify(f"Nhận dạng: {short}", 2500)
 
     def _toggle_refine(self):
         on = self.refine_action.isChecked()
@@ -315,11 +336,143 @@ class Pill(QWidget):
         self._notify("Bật dọn chính tả bằng AI (+~0.5s)." if on
                      else "Tắt dọn chính tả bằng AI.", 2500)
 
-    # ---------------- Groq API key ----------------
+    # ---------------- API key ----------------
     def _refresh_key_action(self):
-        has = bool(self.engine.groq_api_key)
+        has = bool(self.engine.api_key)
+        prov_name = self.engine.provider["display_name"].split()[0]
         self.key_action.setText(
-            "Đổi Groq API key…" if has else "Nhập Groq API key…  (cần thiết)")
+            f"Đổi {prov_name} API key…" if has
+            else f"Nhập {prov_name} API key…  (cần thiết)"
+        )
+
+    # ---------------- Nhà cung cấp STT (multi-provider) ----------------
+    def _build_provider_menu(self):
+        """Submenu: chọn provider. Sau khi đổi provider -> rebuild model menu."""
+        self.provider_menu = self.menu.addMenu("Nhà cung cấp STT")
+        self._provider_actions = {}
+        for pid, p in stt_providers.all_providers().items():
+            act = self.provider_menu.addAction(
+                p["display_name"],
+                lambda pp=pid: self._set_provider(pp),
+            )
+            act.setCheckable(True)
+            act.setData(pid)
+            self._provider_actions[pid] = act
+        self.provider_menu.addSeparator()
+        self.provider_menu.addAction(
+            "Quản lý endpoint tùy chỉnh…", self._open_settings
+        )
+        self._refresh_provider_menu()
+
+    def _refresh_provider_menu(self):
+        cur = self.engine.provider_id
+        for pid, act in self._provider_actions.items():
+            act.setChecked(pid == cur)
+
+    def _set_provider(self, pid):
+        new = self.engine.set_provider(pid)
+        if not new:
+            return
+        self._refresh_provider_menu()
+        # Rebuild submenu "Chất lượng nhận dạng" theo provider mới
+        self.quality_menu.clear()
+        self._model_actions = []
+        for m in new.get("models") or []:
+            act = self.quality_menu.addAction(
+                m, lambda mm=m: self._set_model(mm)
+            )
+            act.setCheckable(True)
+            act.setData(m)
+            self._model_actions.append(act)
+        self._refresh_model_menu()
+        self._refresh_key_action()
+        self._notify(f"Provider: {new['display_name']}", 2500)
+
+    # ---------------- Lịch sử chép ----------------
+    def _build_history_menu(self):
+        """Submenu 'Lịch sử' — rebuild mỗi lần mở để luôn mới."""
+        # Placeholder; sẽ rebuild on-demand trong _open_history_menu.
+        self.history_menu = self.menu.addMenu("Lịch sử")
+        self.history_menu.aboutToShow.connect(self._refresh_history_menu)
+        self._refresh_history_menu()
+
+    def _refresh_history_menu(self):
+        """Xoá action cũ + load 20 dòng gần nhất."""
+        m = self.history_menu
+        m.clear()
+        items = hist_mod.load(limit=20)
+        if not items:
+            a = m.addAction("(trống)")
+            a.setEnabled(False)
+            return
+        for it in items:
+            text = (it.get("text") or "").strip().replace("\n", " ⏎ ")
+            short = text if len(text) <= 50 else text[:49] + "…"
+            label = f"{it.get('hhmm', '')}  {short}"
+            sub = m.addMenu(label)
+            sub.addAction("Gõ lại tại con trỏ",
+                          lambda t=text: self._replay_text(t, mode="type"))
+            sub.addAction("Copy clipboard",
+                          lambda t=text: self._replay_text(t, mode="clipboard"))
+            sub.addSeparator()
+            sub.addAction("Xoá lịch sử", self._clear_history)
+        m.addSeparator()
+        s = hist_mod.stats()
+        m.addAction(
+            f"Tổng: {s['count']} lần · {s['words']} từ (không xoá được nếu đang nói)",
+        ).setEnabled(False)
+
+    def _replay_text(self, text, mode="type"):
+        """Gõ lại / copy text cũ (không qua STT)."""
+        if not text:
+            return
+        if mode == "clipboard":
+            try:
+                import pyperclip
+                pyperclip.copy(text)
+                self._notify("Đã copy vào clipboard.", 1800)
+            except Exception as e:
+                self._notify(f"Lỗi copy: {e}", 3000)
+            return
+        try:
+            self.engine.kb.type(text + " ")
+            self._notify("Đã gõ lại.", 1800)
+        except Exception as e:
+            self._notify(f"Lỗi gõ: {e}", 3000)
+
+    def _clear_history(self):
+        hist_mod.clear()
+        self._refresh_history_menu()
+        self._notify("Đã xoá lịch sử.", 1800)
+
+    # ---------------- Snippets ----------------
+    def _open_snippets_editor(self):
+        """Mở editor QDialog chỉnh snippets."""
+        dlg = settings_ui.SnippetsDialog(self, self.engine)
+        dlg.exec()
+        # Sau khi đóng, snippets module đã save tự động -> engine sẽ dùng khi chép.
+
+    # ---------------- Settings dialog tổng hợp ----------------
+    def _open_settings(self):
+        dlg = settings_ui.SettingsDialog(self, self.engine)
+        if dlg.exec():
+            # Áp dụng các thay đổi nếu user bấm OK
+            dlg.apply_to_engine(self.engine)
+            self._refresh_provider_menu()
+            self._refresh_model_menu()
+            self._refresh_key_action()
+            # Rebuild model menu nếu provider đổi
+            new = self.engine.provider
+            self.quality_menu.clear()
+            self._model_actions = []
+            for m in new.get("models") or []:
+                act = self.quality_menu.addAction(
+                    m, lambda mm=m: self._set_model(mm)
+                )
+                act.setCheckable(True)
+                act.setData(m)
+                self._model_actions.append(act)
+            self._refresh_model_menu()
 
     # ---------------- tích hợp Windows ----------------
     def _toggle_startup(self):
@@ -338,16 +491,17 @@ class Pill(QWidget):
 
     def _enter_groq_key(self):
         from PySide6.QtWidgets import QInputDialog, QLineEdit
+        prov = self.engine.provider
         key, ok = QInputDialog.getText(
-            None, "Groq API key",
-            "Dán API key (miễn phí ở console.groq.com):",
-            QLineEdit.Normal, self.engine.groq_api_key)
+            None, f"{prov['display_name']} API key",
+            f"Dán API key cho {prov['display_name']}:",
+            QLineEdit.Normal, self.engine.api_key)
         if not ok:
             return
-        self.engine.set_groq_key(key)
+        self.engine.set_api_key(key)
         self._refresh_key_action()
-        if self.engine.groq_api_key:
-            self._notify("Đã lưu Groq API key.", 2500)
+        if self.engine.api_key:
+            self._notify(f"Đã lưu {prov['display_name'].split()[0]} API key.", 2500)
 
     def _quit(self):
         try:
