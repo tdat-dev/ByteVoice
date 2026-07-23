@@ -4,10 +4,16 @@
 Giữ một phím tắt toàn cục, nói, nhả phím — chữ tiếng Việt tự chèn vào nơi
 con trỏ đang đứng.
 
+> Phiên bản hiện tại: **v1.4.0** — lịch sử chép, snippets text-expansion,
+> multi-provider (Groq/OpenAI/custom), Settings dialog tổng hợp.
+
 > Tên *WakerVoice* lấy từ **sotto voce** (nói rất khẽ) — đúng tinh thần "nói thầm ra chữ".
 
 Giao diện là một **pill** nổi, siêu nhẹ, vẽ bằng Qt (PySide6 / QPainter). Backend
 STT qua **multi-provider cloud API** (không cần GPU/model cục bộ).
+
+Mã nguồn: https://github.com/tdat-dev/ByteVoice
+Tải bản mới nhất: https://github.com/tdat-dev/ByteVoice/releases/latest
 
 ## Tính năng
 
