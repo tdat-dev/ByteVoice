@@ -4,8 +4,9 @@
 Giữ một phím tắt toàn cục, nói, nhả phím — chữ tiếng Việt tự chèn vào nơi
 con trỏ đang đứng.
 
-> Phiên bản hiện tại: **v1.4.0** — lịch sử chép, snippets text-expansion,
-> multi-provider (Groq/OpenAI/custom), Settings dialog tổng hợp.
+> Phiên bản hiện tại: **v1.4.1** — sửa lỗi STT cloud không ra chữ (WAV sample
+> width), lịch sử chép, snippets text-expansion, multi-provider (Groq/OpenAI/custom),
+> Settings dialog tổng hợp.
 
 > Tên *WakerVoice* lấy từ **sotto voce** (nói rất khẽ) — đúng tinh thần "nói thầm ra chữ".
 
