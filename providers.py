@@ -162,7 +162,7 @@ def _build_wav_bytes(audio):
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
-        w.setnampwidth(2)
+        w.setsampwidth(2)
         w.setframerate(16000)
         w.writeframes(pcm16)
     return buf.getvalue()
