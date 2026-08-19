@@ -55,6 +55,15 @@ from engine import SttEngine
 import history as hist_mod
 import providers as stt_providers
 import settings_ui
+from translate_engine import TranslateEngine
+from caption_overlay import CaptionOverlay
+
+# Ngôn ngữ đích nhanh cho menu tray (mã ISO -> nhãn hiển thị)
+TRANSLATE_LANGS = [
+    ("en", "English"), ("vi", "Tiếng Việt"), ("ja", "日本語"),
+    ("ko", "한국어"), ("zh-CN", "中文"), ("fr", "Français"),
+    ("es", "Español"), ("de", "Deutsch"),
+]
 
 # ---------- hằng số thiết kế ----------
 # Canvas trong suốt cố định; capsule tự nở/thu bên trong (không resize cửa sổ -> không giật).
@@ -95,6 +104,11 @@ BRAND_B64 = b"iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAIAAADwf7zUAAEAAElEQVR4nMz9CbctuX
 
 class Bridge(QObject):
     """Đưa sự kiện engine (chạy ở thread nền) về GUI thread an toàn."""
+    sig = Signal(str, object)
+
+
+class TranslateBridge(QObject):
+    """Đưa sự kiện TranslateEngine (thread nền) về GUI thread an toàn."""
     sig = Signal(str, object)
 
 
@@ -143,6 +157,13 @@ class Pill(QWidget):
         self.app_icon = None           # QPixmap đang hiển thị
         self._cur_exe = None           # exe của foreground gần nhất
 
+        # ------ Dịch nhanh (Realtime) — tách biệt hoàn toàn với engine STT ------
+        self.caption_overlay = CaptionOverlay()
+        self._tsig = TranslateBridge()
+        self._tsig.sig.connect(self._on_translate_event)
+        self.translate_engine = TranslateEngine(
+            lambda ev, pl=None: self._tsig.sig.emit(ev, pl))
+
         self._build_tray()
         self._place_bottom_center()
 
@@ -179,6 +200,11 @@ class Pill(QWidget):
                 QTimer.singleShot(1800, lambda: self._notify(
                     f"Đã tạo {len(made)} lối tắt & bật khởi động cùng Windows. "
                     "Tắt trong menu khay nếu không muốn.", 7000))
+
+        # Khôi phục Dịch nhanh nếu user đã bật ở lần chạy trước
+        if config.load().get("translate_enabled"):
+            self.translate_action.setChecked(True)
+            self.translate_engine.start()
 
         # Lần đầu chưa có API key -> nhắc (app cloud-only, cần key mới nói được)
         if not self.engine.api_key:
@@ -258,6 +284,22 @@ class Pill(QWidget):
         self._refresh_key_action()
         self.menu.addSeparator()
 
+        # ----------------------- Dịch nhanh (Realtime) -----------------------
+        self.translate_action = self.menu.addAction(
+            "Dịch nhanh (Realtime)", self._toggle_translate_mode)
+        self.translate_action.setCheckable(True)
+        self.translate_action.setChecked(False)
+        self.translate_lang_menu = self.menu.addMenu("  → Ngôn ngữ đích")
+        self._translate_lang_actions = {}
+        for code, label in TRANSLATE_LANGS:
+            act = self.translate_lang_menu.addAction(
+                label, lambda c=code: self._set_translate_lang(c))
+            act.setCheckable(True)
+            act.setData(code)
+            self._translate_lang_actions[code] = act
+        self._refresh_translate_lang_menu()
+        self.menu.addSeparator()
+
         # Tích hợp Windows (chỉ ở bản đóng gói): startup + lối tắt
         if install.is_frozen():
             self.startup_action = self.menu.addAction(
@@ -314,6 +356,47 @@ class Pill(QWidget):
         label = {"auto": "Tự động (mọi ngôn ngữ)", "vi": "Tiếng Việt",
                  "en": "English"}[lang]
         self._notify("Ngôn ngữ: " + label, 2500)
+
+    # ---------------- Dịch nhanh (Realtime) ----------------
+    def _toggle_translate_mode(self):
+        on = self.translate_action.isChecked()
+        cfg = config.load()
+        cfg["translate_enabled"] = on
+        config.save(cfg)
+        if on:
+            if not self.translate_engine.google_api_key:
+                self._notify(
+                    "Chưa có Google Translate API key — vào Cài đặt → tab "
+                    "Dịch nhanh để nhập. Text gốc vẫn hiện, chỉ chưa dịch.", 6000)
+            self.translate_engine.start()
+            self._notify("Đã bật Dịch nhanh (Realtime).", 2500)
+        else:
+            self.translate_engine.stop()
+            self.caption_overlay.set_active(False)
+            self._notify("Đã tắt Dịch nhanh.", 2000)
+
+    def _refresh_translate_lang_menu(self):
+        cur = self.translate_engine.target_lang
+        for code, act in self._translate_lang_actions.items():
+            act.setChecked(code == cur)
+
+    def _set_translate_lang(self, code):
+        self.translate_engine.set_target_lang(code)
+        self._refresh_translate_lang_menu()
+        label = dict(TRANSLATE_LANGS).get(code, code)
+        self._notify(f"Ngôn ngữ đích dịch: {label}", 2000)
+
+    def _on_translate_event(self, ev, pl):
+        """Nhận event từ TranslateEngine (STT + Google Translate)."""
+        if ev == "translate_result" and isinstance(pl, dict):
+            self.caption_overlay.set_active(True)
+            self.caption_overlay.add_result(
+                pl.get("source", ""), pl.get("original", ""),
+                pl.get("translated", ""))
+        elif ev == "translate_error":
+            self._notify(f"Dịch nhanh lỗi: {pl}", 4000)
+        elif ev == "translate_state" and pl == "idle":
+            pass  # overlay tự ẩn khi hết dòng (xem CaptionOverlay._gc_old_lines)
 
     # ---------------- chất lượng nhận dạng (model Groq) ----------------
     def _refresh_model_menu(self):
@@ -454,25 +537,63 @@ class Pill(QWidget):
 
     # ---------------- Settings dialog tổng hợp ----------------
     def _open_settings(self):
-        dlg = settings_ui.SettingsDialog(self, self.engine)
-        if dlg.exec():
-            # Áp dụng các thay đổi nếu user bấm OK
-            dlg.apply_to_engine(self.engine)
-            self._refresh_provider_menu()
-            self._refresh_model_menu()
-            self._refresh_key_action()
-            # Rebuild model menu nếu provider đổi
-            new = self.engine.provider
-            self.quality_menu.clear()
-            self._model_actions = []
-            for m in new.get("models") or []:
-                act = self.quality_menu.addAction(
-                    m, lambda mm=m: self._set_model(mm)
+        # Bọc try/except để bắt mọi exception (kể cả Qt native crash) — không để
+        # toàn bộ app chết khi user mở Settings. Lỗi sẽ in ra log + hiện dialog nhỏ.
+        #
+        # Quan trọng hơn: dừng TranslateEngine (nếu đang chạy) trước khi exec()
+        # modal. Trên Python 3.14 + Qt + PyAudioWPatch, exec() chạy song song với
+        # pyaudiowpatch loopback thread gây native segfault khi apply_to_engine
+        # chạm vào cấu hình engine. Tạm dừng nghe là an toàn nhất.
+        was_running = False
+        try:
+            if getattr(self, "translate_engine", None) is not None \
+                    and self.translate_engine.is_running():
+                was_running = True
+                self.translate_engine.stop()
+        except Exception:
+            pass
+        try:
+            dlg = settings_ui.SettingsDialog(self, self.engine, self.translate_engine)
+            accepted = bool(dlg.exec())
+            if accepted:
+                # Áp dụng các thay đổi nếu user bấm OK
+                dlg.apply_to_engine(self.engine)
+                self._refresh_provider_menu()
+                self._refresh_model_menu()
+                self._refresh_key_action()
+                self._refresh_translate_lang_menu()
+                # Rebuild model menu nếu provider đổi
+                new = self.engine.provider
+                self.quality_menu.clear()
+                self._model_actions = []
+                for m in new.get("models") or []:
+                    act = self.quality_menu.addAction(
+                        m, lambda mm=m: self._set_model(mm)
+                    )
+                    act.setCheckable(True)
+                    act.setData(m)
+                    self._model_actions.append(act)
+                self._refresh_model_menu()
+        except Exception as e:
+            import traceback as _tb
+            print(f"[settings] OPEN/EXEC CRASH: {e}", file=sys.stderr, flush=True)
+            _tb.print_exc()
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Cài đặt lỗi",
+                    f"Không mở được Cài đặt:\n{e}\n\nĐã ghi chi tiết ra wakervoice_qt.log.",
                 )
-                act.setCheckable(True)
-                act.setData(m)
-                self._model_actions.append(act)
-            self._refresh_model_menu()
+            except Exception:
+                pass
+        finally:
+            # Khôi phục translate engine nếu user đã bật trước đó
+            if was_running:
+                try:
+                    self.translate_engine.start()
+                except Exception as e:
+                    print(f"[settings] restart translate lỗi: {e}",
+                          file=sys.stderr, flush=True)
 
     # ---------------- tích hợp Windows ----------------
     def _toggle_startup(self):
@@ -506,6 +627,10 @@ class Pill(QWidget):
     def _quit(self):
         try:
             self.engine.shutdown()
+        except Exception:
+            pass
+        try:
+            self.translate_engine.shutdown()
         except Exception:
             pass
         self.tray.hide()

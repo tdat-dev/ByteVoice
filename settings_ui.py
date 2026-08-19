@@ -17,8 +17,10 @@ Tất cả dialog NUỐT lỗi -> app không bao giờ chết vì UI setting.
 import os
 import json
 import threading
+import time
+import logging
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget, QWidget,
@@ -31,6 +33,16 @@ import config
 import snippets as snip_mod
 import history as hist_mod
 import providers as stt_providers
+import google_translate
+
+# Ngôn ngữ hỗ trợ cho tab Dịch nhanh (mã ISO -> nhãn hiển thị)
+TRANSLATE_LANGS = [
+    ("en", "English"), ("vi", "Tiếng Việt"), ("ja", "日本語"),
+    ("ko", "한국어"), ("zh-CN", "中文"), ("fr", "Français"),
+    ("es", "Español"), ("de", "Deutsch"), ("ru", "Русский"),
+    ("th", "ไทย"), ("id", "Bahasa Indonesia"),
+]
+TRANSLATE_SOURCE_LANGS = [("auto", "Tự động nhận diện")] + TRANSLATE_LANGS
 
 
 # ---------- helpers ----------
@@ -169,14 +181,70 @@ class SnippetsDialog(QDialog):
 # ============================================================================
 # SettingsDialog — cài đặt tổng hợp
 # ============================================================================
+
+# Số test request đang chạy đồng thời — chống user bấm 5 lần liên tiếp sinh
+# 5 thread race nhau. Lưu vào instance của SettingsDialog.
+_TEST_INFLIGHT = {}
+
+
+def _run_test_in_thread(self, label_widget, label_text, runner, on_done):
+    """Chạy `runner()` trong thread daemon; khi xong setText `label_widget`
+    bằng `on_done(ok, msg)` trên UI thread. Chống trùng lặp + log đầy đủ.
+
+    runner() -> (ok: bool, msg: str). Nên có timeout nội tại (vd 6s).
+    """
+    # Chống bấm liên tiếp: nếu đang chạy, hiện "đang chạy" và bỏ qua
+    if _TEST_INFLIGHT.get(id(self)):
+        try:
+            label_widget.setText(
+                f"<span style='color:#888'>…đợi test trước xong ({label_text})</span>"
+            )
+        except (RuntimeError, AttributeError):
+            pass
+        return
+    _TEST_INFLIGHT[id(self)] = True
+    try:
+        label_widget.setText(f"<span style='color:#888'>⏳ {label_text}…</span>")
+    except (RuntimeError, AttributeError):
+        pass
+    log = logging.getLogger("wakervoice.test")
+
+    def work():
+        t0 = time.monotonic()
+        log.info("[test:%s] start", label_text)
+        try:
+            ok, msg = runner()
+        except Exception as e:
+            ok, msg = False, f"{type(e).__name__}: {e}"
+            log.exception("[test:%s] raised", label_text)
+        dt = (time.monotonic() - t0) * 1000
+        log.info("[test:%s] done in %.0fms ok=%s msg=%r",
+                 label_text, dt, ok, (msg or "")[:120])
+        html = on_done(ok, msg)
+
+        def _apply():
+            try:
+                # Đánh dấu xong TRƯỚC khi setText, để lần bấm tiếp theo không bị block
+                _TEST_INFLIGHT[id(self)] = False
+                if html is not None and label_widget is not None:
+                    label_widget.setText(html)
+            except (RuntimeError, AttributeError):
+                pass
+
+        QTimer.singleShot(0, _apply)
+
+    threading.Thread(target=work, daemon=True, name=f"test-{label_text[:8]}").start()
+
+
 class SettingsDialog(QDialog):
     """Tab tổng hợp: Ngôn ngữ / API / Phím tắt / Snippets / Lịch sử."""
 
-    def __init__(self, parent=None, engine=None):
+    def __init__(self, parent=None, engine=None, translate_engine=None):
         super().__init__(parent)
         self.setWindowTitle("Cài đặt WakerVoice")
         self.setMinimumSize(700, 520)
         self.engine = engine
+        self.translate_engine = translate_engine
         self._cfg = config.load()  # snapshot
 
         root = QVBoxLayout(self)
@@ -186,6 +254,7 @@ class SettingsDialog(QDialog):
         self._build_tab_language()
         self._build_tab_api()
         self._build_tab_hotkey()
+        self._build_tab_translate()
         self._build_tab_snippets()
         self._build_tab_history()
 
@@ -352,14 +421,22 @@ class SettingsDialog(QDialog):
         if not api_key:
             self.test_result.setText("⚠ Chưa có API key.")
             return
-        self.test_result.setText("Đang kiểm tra…")
-        # chạy trong thread để UI không đứng
-        def work():
-            ok, msg = stt_providers.test_connection(provider, api_key)
+
+        def runner():
+            return stt_providers.test_connection(provider, api_key, timeout=6)
+
+        def on_done(ok, msg):
             color = "#2e7" if ok else "#d44"
             mark = "✓" if ok else "✗"
-            self.test_result.setText(f"<span style='color:{color}'>{mark} {msg}</span>")
-        threading.Thread(target=work, daemon=True).start()
+            return f"<span style='color:{color}'>{mark} {msg}</span>"
+
+        _run_test_in_thread(
+            self,
+            label_widget=self.test_result,
+            label_text=f"STT {_label_provider_name(pid)}",
+            runner=runner,
+            on_done=on_done,
+        )
 
     def _add_custom_provider(self):
         from PySide6.QtWidgets import QInputDialog
@@ -448,6 +525,90 @@ class SettingsDialog(QDialog):
 
         self.tabs.addTab(w, "Phím tắt")
 
+    # --------------- Tab Dịch nhanh (Realtime) ---------------
+    def _build_tab_translate(self):
+        w = QWidget()
+        layout = QFormLayout(w)
+        layout.addRow(QLabel(
+            "<b>Dịch nhanh (Realtime)</b> · Nghe mic + âm thanh hệ thống, chép "
+            "chữ (dùng provider STT ở tab API) rồi dịch qua Google Cloud "
+            "Translation. Bật/tắt nhanh ở menu khay."
+        ))
+
+        self.gt_api_edit = QLineEdit()
+        self.gt_api_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gt_api_edit.setPlaceholderText("Dán Google Cloud Translation API key…")
+        self.gt_api_edit.setText(self._cfg.get("google_translate_api_key") or "")
+        layout.addRow("Google API key:", self.gt_api_edit)
+
+        gt_show_btn = QPushButton("Hiện")
+        gt_show_btn.setCheckable(True)
+        gt_show_btn.toggled.connect(
+            lambda v: self.gt_api_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if v else QLineEdit.EchoMode.Password
+            )
+        )
+        layout.addRow("", gt_show_btn)
+
+        layout.addRow(QLabel(
+            'Lấy free API key (500.000 ký tự/tháng, miễn phí vĩnh viễn) tại '
+            '<a href="https://console.cloud.google.com/apis/library/translate.googleapis.com">'
+            'Google Cloud Console</a> → bật "Cloud Translation API" → tạo API key.'
+        ))
+
+        # Ngôn ngữ nguồn / đích
+        self.gt_source_combo = QComboBox()
+        for code, label in TRANSLATE_SOURCE_LANGS:
+            self.gt_source_combo.addItem(label, code)
+        cur_src = self._cfg.get("translate_source_lang") or "auto"
+        for i in range(self.gt_source_combo.count()):
+            if self.gt_source_combo.itemData(i) == cur_src:
+                self.gt_source_combo.setCurrentIndex(i)
+                break
+        layout.addRow("Ngôn ngữ nguồn:", self.gt_source_combo)
+
+        self.gt_target_combo = QComboBox()
+        for code, label in TRANSLATE_LANGS:
+            self.gt_target_combo.addItem(label, code)
+        cur_tgt = self._cfg.get("translate_target_lang") or "en"
+        for i in range(self.gt_target_combo.count()):
+            if self.gt_target_combo.itemData(i) == cur_tgt:
+                self.gt_target_combo.setCurrentIndex(i)
+                break
+        layout.addRow("Ngôn ngữ đích:", self.gt_target_combo)
+
+        # Test connection
+        gt_test_btn = QPushButton("Test kết nối")
+        gt_test_btn.clicked.connect(self._test_google_translate_connection)
+        layout.addRow("", gt_test_btn)
+        self.gt_test_result = QLabel("")
+        self.gt_test_result.setStyleSheet("color: #888;")
+        layout.addRow("", self.gt_test_result)
+
+        self.tabs.addTab(w, "Dịch nhanh")
+
+    def _test_google_translate_connection(self):
+        api_key = self.gt_api_edit.text().strip()
+        if not api_key:
+            self.gt_test_result.setText("⚠ Chưa có API key.")
+            return
+
+        def runner():
+            return google_translate.test_connection(api_key, timeout=6)
+
+        def on_done(ok, msg):
+            color = "#2e7" if ok else "#d44"
+            mark = "✓" if ok else "✗"
+            return f"<span style='color:{color}'>{mark} {msg}</span>"
+
+        _run_test_in_thread(
+            self,
+            label_widget=self.gt_test_result,
+            label_text="Google Translate",
+            runner=runner,
+            on_done=on_done,
+        )
+
     # --------------- Tab Snippets (link) ---------------
     def _build_tab_snippets(self):
         w = QWidget()
@@ -534,3 +695,10 @@ class SettingsDialog(QDialog):
         # Hotkey + output mode (cần thiết nếu user đổi qua đây)
         engine.set_hotkey(self.hotkey_combo.currentData() or engine.hotkey_name)
         engine.set_output_mode(self.output_combo.currentData() or engine.output_mode)
+        # Dịch nhanh (Realtime) — nếu dialog được tạo kèm translate_engine
+        if self.translate_engine is not None:
+            self.translate_engine.set_google_api_key(self.gt_api_edit.text())
+            self.translate_engine.set_source_lang(
+                self.gt_source_combo.currentData() or self.translate_engine.source_lang)
+            self.translate_engine.set_target_lang(
+                self.gt_target_combo.currentData() or self.translate_engine.target_lang)

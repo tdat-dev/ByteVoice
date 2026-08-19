@@ -22,6 +22,13 @@ DEFAULTS = {
     "refine": True,                           # LLM dọn dấu/chính tả tiếng Việt sau khi chép (+~0.5s)
     "refine_model": "llama-3.3-70b-versatile",  # nhanh + trung thực (không bịa/đổi từ)
     "installed": False,                       # đã tạo lối tắt + bật startup lần đầu chưa
+    # Translate mode (realtime dịch mic + system audio)
+    "translate_enabled": False,               # toggle translate mode on/off
+    "translate_model": "whisper-large-v3-turbo",  # STT RIÊNG cho translate mode: turbo nhanh 2-4x, dấu kém không quan trọng khi mục tiêu là phụ đề dịch realtime
+    "translate_target_lang": "en",            # ngôn ngữ đích (en, vi, ja, zh-CN, ...)
+    "translate_source_lang": "auto",          # ngôn ngữ nguồn ("auto" = tự nhận)
+    "google_translate_api_key": "",           # Google Cloud Translation API key hoặc service account JSON
+    "translate_hotkey": "f10",                # phím tắt toggle translate mode (riêng, không dùng chung push-to-talk)
 }
 
 

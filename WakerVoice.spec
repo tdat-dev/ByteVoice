@@ -22,14 +22,19 @@ for _n in ("libcrypto-3-x64.dll", "libssl-3-x64.dll", "_ssl.pyd", "_hashlib.pyd"
     if os.path.exists(_p):
         binaries.append((_p, "."))
 
-# Chỉ cần native của sounddevice (portaudio) cho việc thu mic.
-for pkg in ("sounddevice",):
+# Native của sounddevice (portaudio) cho thu mic; pyaudiowpatch (WASAPI loopback)
+# cho translate mode thu system-audio. pyaudiowpatch được import LỒNG trong
+# translate_engine.start() nên PyInstaller dễ bỏ sót -> ép collect_all để chắc
+# chắn native _portaudio đi kèm, không thì "Hệ thống" (system audio) chết trong exe.
+for pkg in ("sounddevice", "pyaudiowpatch"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
     hiddenimports += h
 
-hiddenimports += ["pynput.keyboard._win32", "pynput.mouse._win32"]
+hiddenimports += ["pynput.keyboard._win32", "pynput.mouse._win32",
+                  "translate_audio", "translate_engine", "google_translate",
+                  "caption_overlay"]
 
 a = Analysis(
     ["app_qt.py"],

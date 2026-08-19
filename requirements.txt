@@ -7,6 +7,11 @@ numpy>=1.24
 pynput>=1.7
 pyperclip>=1.8
 
+# Dịch nhanh (Realtime): bắt âm thanh hệ thống (WASAPI loopback, Windows).
+# Dịch text qua Google Cloud Translation REST v2 bằng urllib stdlib (không cần
+# SDK google-cloud-translate nặng — giữ app nhẹ máy đúng triết lý cloud-only).
+PyAudioWPatch>=0.2.12.7
+
 # Nhận dạng: Groq API (đám mây) — gọi bằng urllib stdlib, không cần thư viện thêm.
 # Bản cloud-only: KHÔNG dùng faster-whisper / CUDA nữa.
 

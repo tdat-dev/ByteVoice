@@ -146,6 +146,27 @@ def test_providers_all_lists_custom():
     print("test_providers_all_lists_custom OK")
 
 
+def test_build_wav_bytes_valid():
+    """REGRESSION: _build_wav_bytes phải tạo WAV PCM16 16kHz mono ĐỌC LẠI ĐƯỢC.
+
+    Từng có typo `setnampwidth` (thay vì setsampwidth) khiến hàm này LUÔN ném
+    `wave.Error: sample width not specified` -> transcribe() luôn fail -> STT
+    cloud (v1.4.0) không bao giờ ra chữ. Test này chặn tái diễn mà không cần mạng.
+    """
+    import io
+    import wave
+    import numpy as np
+    audio = (0.2 * np.sin(2 * np.pi * 220 * np.arange(16000) / 16000)).astype("float32")
+    data = stt_providers._build_wav_bytes(audio)
+    assert data[:4] == b"RIFF", data[:4]
+    with wave.open(io.BytesIO(data), "rb") as w:      # đọc lại: chứng minh header hợp lệ
+        assert w.getnchannels() == 1
+        assert w.getsampwidth() == 2                  # PCM16
+        assert w.getframerate() == 16000
+        assert w.getnframes() == 16000
+    print("test_build_wav_bytes_valid OK")
+
+
 # ---- engine importability smoke test ----
 def test_engine_import():
     """Engine import không lỗi (không cần chạy)."""
@@ -256,6 +277,245 @@ def test_engine_init_multiprovider():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---- google_translate (REST v2, stdlib-only) ----
+import google_translate
+
+
+def test_google_translate_no_key():
+    """test_connection trả False rõ ràng khi thiếu API key (không raise)."""
+    ok, msg = google_translate.test_connection("")
+    assert ok is False, (ok, msg)
+    assert "API key" in msg, msg
+    print("test_google_translate_no_key OK")
+
+
+def test_google_translate_text_empty_input():
+    """translate_text với text rỗng -> trả ('', '') mà KHÔNG gọi network."""
+    out, detected = google_translate.translate_text(
+        "", api_key="fake-key", target_lang="en")
+    assert out == "" and detected == "", (out, detected)
+    print("test_google_translate_text_empty_input OK")
+
+
+def test_google_translate_text_no_key_raises():
+    """Thiếu API key -> raise (caller tự bắt để fallback về text gốc)."""
+    try:
+        google_translate.translate_text("hello", api_key="", target_lang="en")
+        assert False, "phải raise khi thiếu API key"
+    except RuntimeError:
+        print("test_google_translate_text_no_key_raises OK")
+
+
+# ---- translate_audio (VAD đơn giản) ----
+import numpy as np
+import translate_audio
+
+
+class _FakeClock:
+    """Đồng hồ giả để test VAD không phụ thuộc wall-clock thật (tránh flaky)."""
+
+    def __init__(self, start=0.0):
+        self.t = start
+
+    def advance(self, dt):
+        self.t += dt
+        return self.t
+
+    def now(self):
+        return self.t
+
+
+def test_translate_audio_vad_cuts_on_silence():
+    """Nói 1s (RMS cao) rồi im lặng đủ lâu -> callback được gọi đúng 1 lần với audio đúng độ dài."""
+    calls = []
+
+    def on_chunk(source, audio):
+        calls.append((source, audio))
+
+    clock = _FakeClock()
+    orig_monotonic = translate_audio.time.monotonic
+    translate_audio.time.monotonic = clock.now
+    try:
+        cap = translate_audio.AudioCaptureThread("mic", on_chunk)
+        sr = translate_audio.SAMPLE_RATE
+        chunk_n = translate_audio.CHUNK_FRAMES
+        chunk_dt = chunk_n / sr
+
+        # 1s "nói" (biên độ đủ lớn để vượt ngưỡng RMS/peak)
+        speech = (0.2 * np.ones(sr, dtype=np.float32))
+        for i in range(0, len(speech), chunk_n):
+            cap._process_chunk(speech[i:i + chunk_n])
+            clock.advance(chunk_dt)
+        assert calls == [], "chưa im lặng thì chưa được cắt đoạn"
+
+        # im lặng đủ lâu (> SILENCE_DURATION_S) để trigger cắt đoạn
+        silence = np.zeros(chunk_n, dtype=np.float32)
+        n_silence_chunks = int(
+            (translate_audio.SILENCE_DURATION_S + 0.3) / chunk_dt) + 1
+        for _ in range(n_silence_chunks):
+            clock.advance(chunk_dt)
+            cap._process_chunk(silence)
+
+        assert len(calls) == 1, f"expected 1 call, got {len(calls)}"
+        got_source, got_audio = calls[0]
+        assert got_source == "mic", got_source
+        assert got_audio.shape[0] >= sr * translate_audio.MIN_SPEECH_DURATION_S, \
+            got_audio.shape[0]
+        print("test_translate_audio_vad_cuts_on_silence OK")
+    finally:
+        translate_audio.time.monotonic = orig_monotonic
+
+
+def test_translate_audio_vad_skips_short_noise():
+    """Đoạn nói quá ngắn (< MIN_SPEECH_DURATION_S) -> KHÔNG gọi callback (tránh tiếng động vặt)."""
+    calls = []
+    clock = _FakeClock()
+    orig_monotonic = translate_audio.time.monotonic
+    translate_audio.time.monotonic = clock.now
+    try:
+        cap = translate_audio.AudioCaptureThread("system", lambda s, a: calls.append((s, a)))
+        sr = translate_audio.SAMPLE_RATE
+        chunk_n = translate_audio.CHUNK_FRAMES
+        chunk_dt = chunk_n / sr
+
+        # Chỉ 0.1s "nói" (< MIN_SPEECH_DURATION_S = 0.5s)
+        short_speech = (0.2 * np.ones(int(sr * 0.1), dtype=np.float32))
+        cap._process_chunk(short_speech)
+        clock.advance(0.1)
+
+        silence = np.zeros(chunk_n, dtype=np.float32)
+        n_silence_chunks = int(
+            (translate_audio.SILENCE_DURATION_S + 0.3) / chunk_dt) + 1
+        for _ in range(n_silence_chunks):
+            clock.advance(chunk_dt)
+            cap._process_chunk(silence)
+
+        assert calls == [], f"đoạn ngắn phải bị loại, got {calls}"
+        print("test_translate_audio_vad_skips_short_noise OK")
+    finally:
+        translate_audio.time.monotonic = orig_monotonic
+
+
+# ---- translate_engine (mock STT + mock Google Translate) ----
+import translate_engine as tr_eng_mod
+
+
+def test_translate_engine_init_defaults():
+    """TranslateEngine khởi tạo với config mặc định (chưa có key nào)."""
+    tmp = tempfile.mkdtemp()
+    os.environ["APPDATA"] = tmp
+    os.environ["LOCALAPPDATA"] = tmp
+    try:
+        import importlib
+        for mod in ["config", "providers", "translate_engine"]:
+            if mod in sys.modules:
+                importlib.reload(sys.modules[mod])
+        import translate_engine as te_mod
+        eng = te_mod.TranslateEngine(lambda *a: None)
+        assert eng.target_lang == "en", eng.target_lang
+        assert eng.source_lang == "auto", eng.source_lang
+        assert eng.google_api_key == "", eng.google_api_key
+        assert eng._running is False
+        print("test_translate_engine_init_defaults OK")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_translate_engine_worker_stt_and_translate(monkeypatch=None):
+    """Worker: audio -> STT (mock) -> translate (mock) -> emit('translate_result', ...)."""
+    tmp = tempfile.mkdtemp()
+    os.environ["APPDATA"] = tmp
+    os.environ["LOCALAPPDATA"] = tmp
+    cfg_path = os.path.join(tmp, "WakerVoice", "config.json")
+    try:
+        os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "provider": "groq",
+                "providers": {"groq": {"api_key": "gsk_test"}},
+                "model": "whisper-large-v3",
+                "translate_target_lang": "en",
+                "translate_source_lang": "auto",
+                "google_translate_api_key": "fake-google-key",
+            }, f)
+
+        import importlib
+        for mod in ["config", "providers", "translate_engine"]:
+            if mod in sys.modules:
+                importlib.reload(sys.modules[mod])
+        import translate_engine as te_mod
+        import providers as stt_mod
+        import google_translate as gt_mod
+
+        events = []
+        eng = te_mod.TranslateEngine(lambda ev, pl=None: events.append((ev, pl)))
+        assert eng.stt_api_key == "gsk_test", eng.stt_api_key
+        assert eng.google_api_key == "fake-google-key", eng.google_api_key
+
+        # Mock STT: trả text tiếng Việt cố định (không gọi network thật)
+        stt_mod.transcribe = lambda *a, **kw: ("xin chào", "vi")
+        te_mod.stt_providers.transcribe = stt_mod.transcribe
+        # Mock Google Translate: trả bản dịch cố định
+        gt_mod.translate_text = lambda text, *, api_key, target_lang, source_lang=None, timeout=15: ("hello", "vi")
+        te_mod.google_translate.translate_text = gt_mod.translate_text
+
+        eng._running = True     # giả lập đang chạy (không start audio thật)
+        fake_audio = np.zeros(16000, dtype=np.float32)
+        eng._work_queue.put(("mic", fake_audio))
+
+        # Chạy 1 vòng worker thủ công (không spawn thread để test tất định)
+        source, audio = eng._work_queue.get(timeout=1.0)
+        text, lang = eng._transcribe(audio)
+        translated = eng._translate_text(text, lang)
+        eng.emit("translate_result", {
+            "source": source, "original": text,
+            "translated": translated, "lang_detected": lang,
+        })
+
+        assert text == "xin chào", text
+        assert lang == "vi", lang
+        assert translated == "hello", translated
+        assert len(events) == 1, events
+        ev, pl = events[0]
+        assert ev == "translate_result", ev
+        assert pl["source"] == "mic", pl
+        assert pl["translated"] == "hello", pl
+        print("test_translate_engine_worker_stt_and_translate OK")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_translate_engine_translate_skips_same_lang():
+    """Nếu ngôn ngữ đã nhận diện == ngôn ngữ đích -> khỏi gọi Google Translate (tiết kiệm quota)."""
+    tmp = tempfile.mkdtemp()
+    os.environ["APPDATA"] = tmp
+    os.environ["LOCALAPPDATA"] = tmp
+    try:
+        import importlib
+        for mod in ["config", "providers", "translate_engine"]:
+            if mod in sys.modules:
+                importlib.reload(sys.modules[mod])
+        import translate_engine as te_mod
+
+        called = {"n": 0}
+
+        def fake_translate(text, *, api_key, target_lang, source_lang=None, timeout=15):
+            called["n"] += 1
+            return "SHOULD NOT BE CALLED", "en"
+
+        te_mod.google_translate.translate_text = fake_translate
+        eng = te_mod.TranslateEngine(lambda *a: None)
+        eng.target_lang = "en"
+        eng.google_api_key = "fake-key"
+
+        out = eng._translate_text("hello there", "en")
+        assert out == "hello there", out
+        assert called["n"] == 0, "không được gọi Google Translate khi cùng ngôn ngữ"
+        print("test_translate_engine_translate_skips_same_lang OK")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_history_roundtrip()
     test_snippets_expand_basic()
@@ -270,4 +530,12 @@ if __name__ == "__main__":
     test_engine_import()
     test_backcompat_old_config()
     test_engine_init_multiprovider()
+    test_google_translate_no_key()
+    test_google_translate_text_empty_input()
+    test_google_translate_text_no_key_raises()
+    test_translate_audio_vad_cuts_on_silence()
+    test_translate_audio_vad_skips_short_noise()
+    test_translate_engine_init_defaults()
+    test_translate_engine_worker_stt_and_translate()
+    test_translate_engine_translate_skips_same_lang()
     print("\nALL TESTS PASSED")
