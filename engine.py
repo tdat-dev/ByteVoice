@@ -30,18 +30,13 @@ import config
 import history
 import snippets
 import providers as stt_providers
+import text_filters
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
-# Câu Whisper hay "ảo giác" trên tiếng Việt (outro YouTube) / tiếng video lọt mic -> chặn
-_HALLUC_PHRASES = (
-    "ghiền mì gõ", "ghien mi go", "đăng ký kênh", "dang ky kenh",
-    "subscribe", "ủng hộ kênh", "cảm ơn các bạn đã theo dõi",
-    "cảm ơn các bạn đã lắng nghe", "hẹn gặp lại", "đừng quên",
-    "để không bỏ lỡ những video", "like và đăng ký", "cảm ơn đã xem",
-    "thanks for watching", "please subscribe", "see you in the next video",
-)
+# Danh sách câu ảo giác Whisper -> gom về module dùng chung text_filters
+# (cả push-to-talk lẫn dịch realtime cùng chặn một danh sách).
 
 # Cụm meta/prompt cũ hay bị Whisper nhại vào transcript (kể cả sau khi đã rút gọn prompt)
 _PROMPT_LEAK_PHRASES = (
@@ -66,14 +61,8 @@ _VOCAB_DUMP_RE = re.compile(
 )
 
 
-def _is_hallucination(text):
-    """True nếu text chỉ là câu outro YouTube quen thuộc (ảo giác / tiếng video lọt mic)."""
-    t = text.lower().strip()
-    if not t:
-        return True
-    if len(t) > 120:                      # câu dài thì coi như nói thật, cho qua
-        return False
-    return any(p in t for p in _HALLUC_PHRASES)
+# Alias tương thích: mọi call site cũ trong file này vẫn gọi _is_hallucination.
+_is_hallucination = text_filters.is_hallucination
 
 
 def _word_seq(s):

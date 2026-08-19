@@ -34,7 +34,7 @@ for pkg in ("sounddevice", "pyaudiowpatch"):
 
 hiddenimports += ["pynput.keyboard._win32", "pynput.mouse._win32",
                   "translate_audio", "translate_engine", "google_translate",
-                  "caption_overlay"]
+                  "caption_overlay", "text_filters"]
 
 a = Analysis(
     ["app_qt.py"],

@@ -22,6 +22,7 @@ import queue
 import config
 import providers as stt_providers
 import google_translate
+import text_filters
 
 
 # Tối đa 4 đoạn audio chờ xử lý — tránh worker bị dồn, tránh queue tràn gây
@@ -229,6 +230,13 @@ class TranslateEngine:
 
             text = (text or "").strip()
             if not text:
+                continue
+
+            # Chặn ẢO GIÁC Whisper (Ghiền Mì Gõ / subscribe...) — hay phọt ra khi
+            # gặp nhạc/hát/khoảng lặng, không phải lời thật -> bỏ, khỏi dịch/hiện.
+            if text_filters.is_hallucination(text):
+                print(f"[TranslateEngine] {source}: BỎ ảo giác {text!r}",
+                      file=sys.stderr, flush=True)
                 continue
 
             print(f"[TranslateEngine] {source}: {text!r} (lang={lang})",
