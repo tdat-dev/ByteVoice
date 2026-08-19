@@ -65,6 +65,13 @@ TRANSLATE_LANGS = [
     ("es", "Español"), ("de", "Deutsch"),
 ]
 
+# Ngôn ngữ NGHE (nguồn STT) nhanh cho menu tray. "auto" hay đoán bừa sang Hàn/Trung
+# khi gặp nhạc -> cho user khoá 1 chạm theo nội dung (VN video / game tiếng Anh).
+TRANSLATE_SOURCE_LANGS = [
+    ("auto", "Tự động"), ("vi", "Tiếng Việt"), ("en", "English"),
+    ("ja", "日本語"), ("ko", "한국어"), ("zh-CN", "中文"),
+]
+
 # ---------- hằng số thiết kế ----------
 # Canvas trong suốt cố định; capsule tự nở/thu bên trong (không resize cửa sổ -> không giật).
 # Lúc rảnh = chấm tròn tí hon (gọn). Lúc thu âm = pill dài có sóng âm + đồng hồ (dễ nhận ra).
@@ -298,6 +305,16 @@ class Pill(QWidget):
             act.setData(code)
             self._translate_lang_actions[code] = act
         self._refresh_translate_lang_menu()
+        # Ngôn ngữ NGHE (nguồn) — khoá để Whisper khỏi nhận nhầm (VN video -> Việt)
+        self.translate_src_menu = self.menu.addMenu("  → Ngôn ngữ nghe")
+        self._translate_src_actions = {}
+        for code, label in TRANSLATE_SOURCE_LANGS:
+            act = self.translate_src_menu.addAction(
+                label, lambda c=code: self._set_translate_source_lang(c))
+            act.setCheckable(True)
+            act.setData(code)
+            self._translate_src_actions[code] = act
+        self._refresh_translate_src_menu()
         self.menu.addSeparator()
 
         # Tích hợp Windows (chỉ ở bản đóng gói): startup + lối tắt
@@ -385,6 +402,19 @@ class Pill(QWidget):
         self._refresh_translate_lang_menu()
         label = dict(TRANSLATE_LANGS).get(code, code)
         self._notify(f"Ngôn ngữ đích dịch: {label}", 2000)
+
+    def _refresh_translate_src_menu(self):
+        cur = self.translate_engine.source_lang
+        for code, act in self._translate_src_actions.items():
+            act.setChecked(code == cur)
+
+    def _set_translate_source_lang(self, code):
+        # Đổi ngôn ngữ nghe: worker đọc source_lang live mỗi đoạn -> áp ngay đoạn kế,
+        # không cần restart capture.
+        self.translate_engine.set_source_lang(code)
+        self._refresh_translate_src_menu()
+        label = dict(TRANSLATE_SOURCE_LANGS).get(code, code)
+        self._notify(f"Ngôn ngữ nghe: {label}", 2000)
 
     def _on_translate_event(self, ev, pl):
         """Nhận event từ TranslateEngine (STT + Google Translate)."""

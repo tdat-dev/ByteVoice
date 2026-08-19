@@ -278,10 +278,20 @@ class TranslateEngine:
             provider=self.provider,
             api_key=self.stt_api_key,
             model=self.model,
-            language="auto",
+            # KHOÁ ngôn ngữ theo lựa chọn của user thay vì luôn "auto": auto-detect
+            # trên nhạc/hát hay đoán bừa sang Hàn/Trung. Chọn "Tiếng Việt" -> Whisper
+            # bị ép nghe tiếng Việt, hết nhận nhầm. Whisper cần ISO ngắn (zh-CN -> zh).
+            language=self._stt_language(),
             prompt="",                     # không dùng prompt code-switch -> tránh leak
             timeout=60,
         )
+
+    def _stt_language(self):
+        """Mã ngôn ngữ đưa cho Whisper: 'auto' hoặc ISO ngắn (vi/en/ja/ko/zh...)."""
+        lang = (self.source_lang or "auto").strip()
+        if lang == "auto":
+            return "auto"
+        return lang.split("-")[0].lower()      # "zh-CN" -> "zh"
 
     def _translate_text(self, text, detected_lang):
         """Dịch text qua Google Cloud Translation REST v2. Lỗi/thiếu key -> trả gốc."""
