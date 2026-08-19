@@ -1,3 +1,3 @@
 """Phiên bản WakerVoice — nguồn duy nhất (app + script release đều đọc ở đây)."""
 
-__version__ = "1.4.3"
+__version__ = "1.4.4"
