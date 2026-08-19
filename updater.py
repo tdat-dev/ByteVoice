@@ -138,8 +138,17 @@ def _blob_url(sha):
     return f"https://github.com/{REPO}/releases/download/{BLOBS_TAG}/{sha}"
 
 
+# sha256 của file rỗng — không có blob nào upload được cho nó (GitHub từ chối
+# asset 0 byte). Nếu manifest lỡ chứa file rỗng thì ghi thẳng file rỗng, khỏi tải.
+_EMPTY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
 def download_blob(sha, dest):
     """Tải 1 blob theo hash -> verify sha256 -> ghi dest. Thử lại 1 lần."""
+    if sha == _EMPTY_SHA:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        open(dest, "wb").close()
+        return
     for attempt in range(2):
         try:
             _download(_blob_url(sha), dest)

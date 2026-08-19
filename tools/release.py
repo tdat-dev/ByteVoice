@@ -72,13 +72,20 @@ def build_installer():
 
 def make_manifest():
     """sha256 mọi file trong dist/WakerVoice (trừ manifest.json). path dùng '/'.
-    Ghi dist/WakerVoice/manifest.json, trả dict files."""
+    Ghi dist/WakerVoice/manifest.json, trả dict files.
+
+    BỎ QUA file 0 byte (vd dist-info/REQUESTED của pip): GitHub từ chối upload
+    asset rỗng (HTTP 400 Bad Content-Length) nên không thể làm blob; các file này
+    chỉ là marker vô dụng lúc chạy -> loại khỏi manifest để delta-update chạy trơn.
+    """
     files = {}
     for r, _d, fs in os.walk(DIST):
         for f in fs:
             full = os.path.join(r, f)
             rel = os.path.relpath(full, DIST).replace("\\", "/")
             if rel == "manifest.json":
+                continue
+            if os.path.getsize(full) == 0:
                 continue
             files[rel] = sha256_file(full)
     manifest = {"version": __version__, "files": files}
