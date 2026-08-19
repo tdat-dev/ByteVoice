@@ -241,21 +241,29 @@ class SystemAudioCapture(AudioCaptureThread):
 class TranslateAudioManager:
     """Quản lý mic + system audio capture cùng lúc. start()/stop() đơn giản."""
 
-    def __init__(self, callback):
-        """callback(source, audio_float32) được gọi khi phát hiện đoạn nói."""
+    def __init__(self, callback, capture_mic=True, capture_system=True):
+        """callback(source, audio_float32) được gọi khi phát hiện đoạn nói.
+
+        capture_mic / capture_system: bật/tắt từng nguồn. Dịch game thường chỉ
+        cần system audio (bỏ mic để khỏi lẫn giọng mình / tiếng phòng)."""
         self.callback = callback
+        self.capture_mic = bool(capture_mic)
+        self.capture_system = bool(capture_system)
         self.mic_thread = None
         self.system_thread = None
 
     def start(self):
-        """Bật cả mic và system audio capture."""
+        """Bật các nguồn audio đã chọn (mic và/hoặc system)."""
         if self.mic_thread is not None or self.system_thread is not None:
             return  # đã chạy
-        self.mic_thread = MicCapture(self.callback)
-        self.mic_thread.start()
-        self.system_thread = SystemAudioCapture(self.callback)
-        self.system_thread.start()
-        print("[TranslateAudio] started mic + system", file=sys.stderr, flush=True)
+        if self.capture_mic:
+            self.mic_thread = MicCapture(self.callback)
+            self.mic_thread.start()
+        if self.capture_system:
+            self.system_thread = SystemAudioCapture(self.callback)
+            self.system_thread.start()
+        print(f"[TranslateAudio] started mic={self.capture_mic} "
+              f"system={self.capture_system}", file=sys.stderr, flush=True)
 
     def stop(self):
         """Dừng cả mic và system audio capture."""

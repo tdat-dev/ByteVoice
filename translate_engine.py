@@ -52,6 +52,8 @@ class TranslateEngine:
         self.target_lang = cfg.get("translate_target_lang", "en")
         self.source_lang = cfg.get("translate_source_lang", "auto")  # "auto" = detect
         self.google_api_key = (cfg.get("google_translate_api_key") or "").strip()
+        # Nguồn nghe: "both" (mic+system) | "system" (chỉ tiếng máy, vd game) | "mic"
+        self.audio_source = cfg.get("translate_audio_source", "both")
 
         # STT provider: dùng CHUNG provider/key mà SttEngine đang cấu hình
         # (đỡ phải nhập API key thêm lần nữa — user đã có key Groq/OpenAI để nói).
@@ -94,7 +96,10 @@ class TranslateEngine:
 
         try:
             from translate_audio import TranslateAudioManager
-            self._audio_manager = TranslateAudioManager(self._on_audio_chunk)
+            cap_mic = self.audio_source in ("both", "mic")
+            cap_sys = self.audio_source in ("both", "system")
+            self._audio_manager = TranslateAudioManager(
+                self._on_audio_chunk, capture_mic=cap_mic, capture_system=cap_sys)
             self._audio_manager.start()
         except Exception as e:
             print(f"[TranslateEngine] audio manager lỗi: {e}", file=sys.stderr, flush=True)
@@ -159,6 +164,18 @@ class TranslateEngine:
         cfg = config.load()
         cfg["translate_source_lang"] = lang
         config.save(cfg)
+
+    def set_audio_source(self, mode):
+        """Đổi nguồn nghe: "both" | "system" | "mic". Đang chạy thì restart capture."""
+        if mode not in ("both", "system", "mic"):
+            return
+        self.audio_source = mode
+        cfg = config.load()
+        cfg["translate_audio_source"] = mode
+        config.save(cfg)
+        if self._running:
+            self.stop()
+            self.start()
 
     def set_google_api_key(self, key):
         """Lưu Google Cloud Translation API key."""

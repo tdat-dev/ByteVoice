@@ -27,6 +27,7 @@ DEFAULTS = {
     "translate_model": "whisper-large-v3-turbo",  # STT RIÊNG cho translate mode: turbo nhanh 2-4x, dấu kém không quan trọng khi mục tiêu là phụ đề dịch realtime
     "translate_target_lang": "en",            # ngôn ngữ đích (en, vi, ja, zh-CN, ...)
     "translate_source_lang": "auto",          # ngôn ngữ nguồn ("auto" = tự nhận)
+    "translate_audio_source": "both",         # nguồn nghe: both (mic+system) | system (chỉ tiếng máy, vd game) | mic
     "google_translate_api_key": "",           # Google Cloud Translation API key hoặc service account JSON
     "translate_hotkey": "f10",                # phím tắt toggle translate mode (riêng, không dùng chung push-to-talk)
 }

@@ -530,10 +530,26 @@ class SettingsDialog(QDialog):
         w = QWidget()
         layout = QFormLayout(w)
         layout.addRow(QLabel(
-            "<b>Dịch nhanh (Realtime)</b> · Nghe mic + âm thanh hệ thống, chép "
-            "chữ (dùng provider STT ở tab API) rồi dịch qua Google Cloud "
+            "<b>Dịch nhanh (Realtime)</b> · Nghe âm thanh hệ thống và/hoặc mic, "
+            "chép chữ (dùng provider STT ở tab API) rồi dịch qua Google Cloud "
             "Translation. Bật/tắt nhanh ở menu khay."
         ))
+
+        # Nguồn nghe: dịch game/video thường chỉ cần "Chỉ hệ thống" (bỏ mic để
+        # khỏi lẫn giọng mình / tiếng phòng).
+        self.gt_source_audio_combo = QComboBox()
+        for code, label in (
+            ("both", "Mic + Hệ thống"),
+            ("system", "Chỉ hệ thống (game/video — bỏ mic)"),
+            ("mic", "Chỉ mic (giọng bạn)"),
+        ):
+            self.gt_source_audio_combo.addItem(label, code)
+        cur_audio_src = self._cfg.get("translate_audio_source") or "both"
+        for i in range(self.gt_source_audio_combo.count()):
+            if self.gt_source_audio_combo.itemData(i) == cur_audio_src:
+                self.gt_source_audio_combo.setCurrentIndex(i)
+                break
+        layout.addRow("Nguồn nghe:", self.gt_source_audio_combo)
 
         self.gt_api_edit = QLineEdit()
         self.gt_api_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -702,3 +718,5 @@ class SettingsDialog(QDialog):
                 self.gt_source_combo.currentData() or self.translate_engine.source_lang)
             self.translate_engine.set_target_lang(
                 self.gt_target_combo.currentData() or self.translate_engine.target_lang)
+            self.translate_engine.set_audio_source(
+                self.gt_source_audio_combo.currentData() or self.translate_engine.audio_source)
