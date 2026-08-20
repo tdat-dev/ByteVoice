@@ -1,145 +1,201 @@
 """
 WakerVoice — Control Center (PySide6)
 ======================================
-Biến cả menu chuột phải (list dài) thành MỘT cửa sổ điều khiển: card có nhóm,
-công tắc gạt, dropdown, nút bấm — như trang settings xịn. Mọi thứ gọi thẳng các
-method sẵn có của Pill (một nguồn chân lý, không viết trùng logic).
+MỘT cửa sổ điều khiển duy nhất cho cả app — thay hẳn menu khay list dài. Gọi thẳng
+method Pill sẵn có (một nguồn chân lý, không nhân đôi logic).
 
-Thiết kế bám bản sắc app (nền tối bo góc như Pill/overlay, một accent indigo,
-accent xanh live). Frameless, kéo tiêu đề để di chuyển. Nuốt lỗi -> app không chết.
+Thiết kế (áp craft-rules build-premium-website, route DASHBOARD_PRODUCT):
+  - Chiến lược màu RESTRAINED: nền trung tính tối + MỘT accent indigo; xanh lá CHỈ
+    cho trạng thái "đang nghe". Không nhồi 4 màu.
+  - KHÔNG eyebrow chữ-hoa-tracked trên mỗi nhóm (scaffold grammar) — tiêu đề nhóm
+    thường, tĩnh, nhẹ.
+  - Segoe UI (giữ nhận diện app, phủ đủ dấu tiếng Việt) với tương phản theo weight.
+  - Contrast chữ đạt ngưỡng; công tắc gạt tự vẽ; frameless bo góc, kéo header.
+Nuốt lỗi -> app không chết vì panel.
 """
 
-from PySide6.QtCore import Qt, QTimer, QRectF, QSize
-from PySide6.QtGui import QPainter, QColor, QFont, QPainterPath, QGuiApplication
+import threading
+
+from PySide6.QtCore import Qt, QTimer, QRectF
+from PySide6.QtGui import QPainter, QColor, QGuiApplication, QLinearGradient
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QComboBox, QFrame, QScrollArea, QSizePolicy, QButtonGroup,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
+    QLineEdit, QFrame, QScrollArea, QSizePolicy, QButtonGroup,
 )
 
 import config
 import install
 import providers as stt_providers
-from translate_panel import (
-    BG, CARD, CARD_Hi, TEXT, MUTED, BORDER, ACCENT, LIVE, MIC_CLR, SYS_CLR,
-    SOURCE_LANGS, TARGET_LANGS, _combo,
-)
+
+# ----------------------- Tokens (RESTRAINED) -----------------------
+BG0   = "#0F1015"      # nền cửa sổ (sâu)
+BG1   = "#171922"      # nền nhóm
+BG2   = "#1F222C"      # nền control
+BG2H  = "#282C38"      # hover
+LINE  = "rgba(255,255,255,0.06)"
+INK   = "#ECEEF3"      # chữ chính
+INK2  = "#AEB3C0"      # chữ phụ (đạt >=4.5:1 trên BG1)
+INK3  = "#868C9A"      # gợi ý
+ACCENT   = "#6C7BFF"   # accent DUY NHẤT (hành động/chọn)
+ACCENT_H = "#7F8CFF"
+LIVE  = "#33C86B"      # CHỈ dùng cho trạng thái đang nghe
+DANGER = "#FF7D7D"
 
 STT_LANGS = [("auto", "Tự động"), ("vi", "Tiếng Việt"), ("en", "English")]
+SOURCE_LANGS = [
+    ("auto", "Tự động"), ("vi", "Tiếng Việt"), ("en", "English"),
+    ("ja", "日本語"), ("ko", "한국어"), ("zh-CN", "中文"),
+]
+TARGET_LANGS = [
+    ("en", "English"), ("vi", "Tiếng Việt"), ("ja", "日本語"),
+    ("ko", "한국어"), ("zh-CN", "中文"), ("fr", "Français"),
+    ("es", "Español"), ("de", "Deutsch"),
+]
+AUDIO_SOURCES = [
+    ("system", "Chỉ hệ thống"), ("both", "Mic + Hệ thống"), ("mic", "Chỉ mic"),
+]
 
 
-# ----------------------- Công tắc gạt tùy biến -----------------------
+def _combo(items, cur):
+    c = QComboBox()
+    for code, label in items:
+        c.addItem(label, code)
+    for i in range(c.count()):
+        if c.itemData(i) == cur:
+            c.setCurrentIndex(i)
+            break
+    return c
+
+
 class Switch(QWidget):
-    """Công tắc gạt kiểu iOS: xám (tắt) / xanh accent (bật). click -> toggled(bool)."""
+    """Công tắc gạt: xám (tắt) / xanh live (bật)."""
 
-    def __init__(self, checked=False, on_toggle=None, parent=None):
-        super().__init__(parent)
-        self._checked = bool(checked)
-        self._on_toggle = on_toggle
-        self.setFixedSize(46, 26)
+    def __init__(self, checked=False, on_toggle=None):
+        super().__init__()
+        self._on = bool(checked)
+        self._cb = on_toggle
+        self.setFixedSize(44, 25)
         self.setCursor(Qt.PointingHandCursor)
 
     def isChecked(self):
-        return self._checked
+        return self._on
 
     def setChecked(self, v):
-        self._checked = bool(v)
-        self.update()
+        self._on = bool(v); self.update()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
-            self._checked = not self._checked
+            self._on = not self._on
             self.update()
-            if self._on_toggle:
-                self._on_toggle(self._checked)
+            if self._cb:
+                self._cb(self._on)
 
     def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
+        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
         w, h = self.width(), self.height()
-        track = QColor(LIVE) if self._checked else QColor("#3A3D47")
-        p.setBrush(track)
         p.setPen(Qt.NoPen)
+        p.setBrush(QColor(LIVE) if self._on else QColor("#3A3E4A"))
         p.drawRoundedRect(QRectF(0, 0, w, h), h / 2, h / 2)
         d = h - 6
-        x = (w - d - 3) if self._checked else 3
+        x = (w - d - 3) if self._on else 3
         p.setBrush(QColor("#FFFFFF"))
         p.drawEllipse(QRectF(x, 3, d, d))
         p.end()
 
 
-def _title_font():
-    f = QFont("Segoe UI", 15)
-    f.setWeight(QFont.Weight.DemiBold)
-    return f
+class Group(QFrame):
+    """Nhóm control: tiêu đề thường (KHÔNG eyebrow) + các hàng."""
 
-
-class Card(QFrame):
-    """Khung nhóm: tiêu đề + nội dung dạng hàng label|control."""
-
-    def __init__(self, title, accent=ACCENT, parent=None):
-        super().__init__(parent)
-        self.setObjectName("card")
-        self.setStyleSheet(
-            f"#card{{background:{CARD}; border:1px solid {BORDER}; border-radius:14px;}}")
+    def __init__(self, title):
+        super().__init__()
+        self.setObjectName("group")
         self.v = QVBoxLayout(self)
-        self.v.setContentsMargins(16, 14, 16, 14)
-        self.v.setSpacing(11)
-        head = QLabel(title)
-        head.setStyleSheet(
-            f"color:{accent}; font-size:11px; font-weight:800; letter-spacing:1.3px;")
-        self.v.addWidget(head)
+        self.v.setContentsMargins(16, 14, 16, 16)
+        self.v.setSpacing(12)
+        t = QLabel(title, objectName="grouptitle")
+        self.v.addWidget(t)
 
     def row(self, label, control, fill=True):
         r = QHBoxLayout()
-        lb = QLabel(label)
-        lb.setStyleSheet(f"color:{TEXT}; font-size:12px;")
+        r.setSpacing(12)
+        lb = QLabel(label, objectName="rowlabel")
         lb.setMinimumWidth(150)
         r.addWidget(lb)
         if fill:
-            # combo giãn lấp phần còn lại -> không bị đẩy tràn mép phải
             control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             r.addWidget(control, 1)
         else:
-            # công tắc/điều khiển cố định -> canh phải
             r.addStretch(1)
             r.addWidget(control)
         self.v.addLayout(r)
         return control
 
     def add(self, w):
-        self.v.addWidget(w)
-        return w
+        self.v.addWidget(w); return w
+
+    def divider(self):
+        ln = QFrame(); ln.setFixedHeight(1)
+        ln.setStyleSheet(f"background:{LINE}; border:none;")
+        self.v.addWidget(ln)
 
 
 _QSS = f"""
-#root {{ background:{BG}; border-radius:20px; border:1px solid {BORDER}; }}
-QWidget {{ color:{TEXT}; font-family:'Segoe UI'; }}
-QScrollArea, QScrollArea > QWidget > QWidget {{ background:transparent; border:none; }}
-QScrollBar:vertical {{ background:transparent; width:8px; margin:2px; }}
-QScrollBar::handle:vertical {{ background:rgba(255,255,255,0.14); border-radius:4px; min-height:30px; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ height:0; }}
-#appname {{ font-size:16px; font-weight:700; }}
-#ver {{ color:{MUTED}; font-size:11px; }}
-#close {{ background:transparent; border:none; color:{MUTED}; font-size:18px; padding:0 6px; border-radius:8px; }}
-#close:hover {{ background:{CARD_Hi}; color:{TEXT}; }}
-QComboBox {{ background:{CARD_Hi}; border:1px solid {BORDER}; border-radius:9px; padding:6px 10px; color:{TEXT}; font-size:12px; min-width:150px; max-width:190px; }}
-QComboBox::drop-down {{ border:none; width:20px; }}
-QComboBox QAbstractItemView {{ background:{CARD}; color:{TEXT}; border:1px solid {BORDER}; selection-background-color:{ACCENT}; outline:none; }}
-QPushButton.seg {{ background:{CARD_Hi}; border:1px solid {BORDER}; color:{MUTED}; padding:6px 14px; border-radius:9px; font-size:12px; }}
-QPushButton.seg:checked {{ background:{ACCENT}; color:white; border:1px solid {ACCENT}; }}
-QPushButton.act {{ background:{CARD_Hi}; border:1px solid {BORDER}; color:{TEXT}; padding:9px 12px; border-radius:10px; font-size:12px; text-align:left; }}
-QPushButton.act:hover {{ background:#30333E; }}
-QPushButton#hero {{ background:{ACCENT}; border:none; border-radius:12px; color:white; font-size:14px; font-weight:600; padding:12px; }}
+#root {{ background:{BG0}; border-radius:20px; border:1px solid {LINE}; }}
+QWidget {{ color:{INK}; font-family:'Segoe UI'; font-size:12px; }}
+QScrollArea, QScrollArea>QWidget>QWidget {{ background:transparent; border:none; }}
+QScrollBar:vertical {{ background:transparent; width:9px; margin:4px 2px; }}
+QScrollBar::handle:vertical {{ background:rgba(255,255,255,0.13); border-radius:4px; min-height:32px; }}
+QScrollBar::handle:vertical:hover {{ background:rgba(255,255,255,0.22); }}
+QScrollBar::add-line,QScrollBar::sub-line {{ height:0; }}
+QScrollBar::add-page,QScrollBar::sub-page {{ background:transparent; }}
+
+#appname {{ font-size:15px; font-weight:600; letter-spacing:0.2px; }}
+#ver {{ color:{INK3}; font-size:11px; }}
+#close {{ background:transparent; border:none; color:{INK3}; font-size:17px; padding:2px 8px; border-radius:9px; }}
+#close:hover {{ background:{BG2}; color:{INK}; }}
+
+#group {{ background:{BG1}; border:1px solid {LINE}; border-radius:16px; }}
+#grouptitle {{ color:{INK}; font-size:13px; font-weight:600; }}
+#rowlabel {{ color:{INK2}; font-size:12px; }}
+#hint {{ color:{INK3}; font-size:11px; }}
+
+QPushButton#hero {{ background:{ACCENT}; border:none; border-radius:13px; color:#FFFFFF;
+    font-size:14px; font-weight:600; padding:14px; }}
+QPushButton#hero:hover {{ background:{ACCENT_H}; }}
 QPushButton#hero[live="true"] {{ background:{LIVE}; }}
-QPushButton#danger {{ background:transparent; border:1px solid {BORDER}; color:#FF8A8A; padding:9px 12px; border-radius:10px; font-size:12px; }}
-QPushButton#danger:hover {{ background:rgba(255,90,90,0.12); }}
-#status {{ color:{MUTED}; font-size:11px; }}
+QPushButton#hero[live="true"]:hover {{ background:#3ED37A; }}
+
+QComboBox {{ background:{BG2}; border:1px solid {LINE}; border-radius:9px; padding:7px 11px;
+    color:{INK}; font-size:12px; min-width:130px; }}
+QComboBox:hover {{ border:1px solid rgba(255,255,255,0.16); }}
+QComboBox::drop-down {{ border:none; width:20px; }}
+QComboBox QAbstractItemView {{ background:{BG2}; color:{INK}; border:1px solid {LINE};
+    border-radius:8px; selection-background-color:{ACCENT}; padding:4px; outline:none; }}
+
+QLineEdit {{ background:{BG2}; border:1px solid {LINE}; border-radius:9px; padding:7px 11px;
+    color:{INK}; font-size:12px; }}
+QLineEdit:focus {{ border:1px solid {ACCENT}; }}
+
+QPushButton.seg {{ background:{BG2}; border:1px solid {LINE}; color:{INK2};
+    padding:8px 12px; border-radius:10px; font-size:12px; }}
+QPushButton.seg:hover {{ background:{BG2H}; color:{INK}; }}
+QPushButton.seg:checked {{ background:{ACCENT}; color:#FFFFFF; border:1px solid {ACCENT}; }}
+
+QPushButton.act {{ background:{BG2}; border:1px solid {LINE}; color:{INK};
+    padding:10px 12px; border-radius:11px; font-size:12px; text-align:left; }}
+QPushButton.act:hover {{ background:{BG2H}; }}
+QPushButton.mini {{ background:{BG2}; border:1px solid {LINE}; color:{INK};
+    padding:7px 12px; border-radius:9px; font-size:12px; }}
+QPushButton.mini:hover {{ background:{BG2H}; }}
+QPushButton#danger {{ background:transparent; border:1px solid {LINE}; color:{DANGER};
+    padding:10px 12px; border-radius:11px; font-size:12px; }}
+QPushButton#danger:hover {{ background:rgba(255,90,90,0.10); }}
+#status {{ color:{INK2}; font-size:11px; }}
+#keystatus {{ color:{INK3}; font-size:11px; }}
 """
 
 
 class ControlCenter(QWidget):
-    """Cửa sổ điều khiển tổng. pill = Pill (main window) để tái dùng method + state."""
-
     def __init__(self, pill):
         super().__init__()
         self.pill = pill
@@ -150,199 +206,169 @@ class ControlCenter(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setWindowTitle("WakerVoice — Bảng điều khiển")
-        self.setFixedWidth(468)
+        self.setFixedWidth(460)
         self.setStyleSheet(_QSS)
         self._build()
-
-        self._pulse = QTimer(self)
-        self._pulse.timeout.connect(self._tick)
-        self._pulse_on = False
+        self._pulse = QTimer(self); self._pulse.timeout.connect(lambda: None)
 
     # ----------------------- Dựng -----------------------
     def _build(self):
         from version import __version__
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        root = QWidget(objectName="root")
-        outer.addWidget(root)
-        rv = QVBoxLayout(root)
-        rv.setContentsMargins(0, 0, 0, 0)
+        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
+        self._root = QWidget(objectName="root")
+        outer.addWidget(self._root)
+        rv = QVBoxLayout(self._root); rv.setContentsMargins(0, 0, 0, 0); rv.setSpacing(0)
 
         # Header
-        head = QHBoxLayout()
-        head.setContentsMargins(22, 16, 16, 8)
+        head = QHBoxLayout(); head.setContentsMargins(22, 18, 14, 10)
         name = QLabel("WakerVoice", objectName="appname")
         ver = QLabel(f"v{__version__}", objectName="ver")
-        close = QPushButton("✕", objectName="close")
-        close.setCursor(Qt.PointingHandCursor)
+        close = QPushButton("✕", objectName="close"); close.setCursor(Qt.PointingHandCursor)
         close.clicked.connect(self.hide)
-        head.addWidget(name)
-        head.addSpacing(8)
-        head.addWidget(ver)
-        head.addStretch(1)
-        head.addWidget(close)
+        head.addWidget(name); head.addSpacing(9); head.addWidget(ver)
+        head.addStretch(1); head.addWidget(close)
         rv.addLayout(head)
 
-        # Scroll body
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        body = QWidget()
-        b = QVBoxLayout(body)
-        b.setContentsMargins(18, 4, 18, 18)
-        b.setSpacing(14)
-        scroll.setWidget(body)
-        rv.addWidget(scroll)
-        self.setMaximumHeight(760)
+        body = QWidget(); b = QVBoxLayout(body)
+        b.setContentsMargins(18, 4, 18, 18); b.setSpacing(13)
+        scroll.setWidget(body); rv.addWidget(scroll)
+        self.setMaximumHeight(780)
 
-        b.addWidget(self._card_translate())
-        b.addWidget(self._card_voice())
-        b.addWidget(self._card_system())
+        b.addWidget(self._grp_translate())
+        b.addWidget(self._grp_voice())
+        b.addWidget(self._grp_system())
 
-    # ---- Card Dịch nhanh ----
-    def _card_translate(self):
-        c = Card("DỊCH NHANH (REALTIME)", accent=SYS_CLR)
-        self.tr_hero = QPushButton(objectName="hero")
-        self.tr_hero.setCursor(Qt.PointingHandCursor)
+    # ---- Dịch nhanh ----
+    def _grp_translate(self):
+        g = Group("Dịch nhanh realtime")
+        self.tr_hero = QPushButton(objectName="hero"); self.tr_hero.setCursor(Qt.PointingHandCursor)
         self.tr_hero.clicked.connect(lambda: (self.pill._panel_toggle(), self._refresh()))
-        c.add(self.tr_hero)
-        self.tr_status = QLabel("", objectName="status")
-        self.tr_status.setWordWrap(True)
-        c.add(self.tr_status)
+        g.add(self.tr_hero)
+        self.tr_status = QLabel("", objectName="status"); self.tr_status.setWordWrap(True)
+        g.add(self.tr_status)
 
-        # mode segmented
-        seg = QHBoxLayout()
-        self.mode_grp = QButtonGroup(self)
-        self.m_batch = self._seg("Groq ~1s")
-        self.m_stream = self._seg("Deepgram ~0.3s")
-        self.mode_grp.addButton(self.m_batch)
-        self.mode_grp.addButton(self.m_stream)
+        seg = QHBoxLayout(); seg.setSpacing(8)
+        self.m_batch = self._seg("Groq · ~1s")
+        self.m_stream = self._seg("Deepgram · ~0.3s")
+        grp = QButtonGroup(self); grp.addButton(self.m_batch); grp.addButton(self.m_stream)
         self.m_batch.clicked.connect(lambda: (self.te.set_stt_mode("batch"), self._refresh()))
         self.m_stream.clicked.connect(lambda: (self.te.set_stt_mode("streaming"), self._refresh()))
-        seg.addWidget(self.m_batch)
-        seg.addWidget(self.m_stream)
-        seg.addStretch(1)
-        c.v.addLayout(seg)
+        for w_ in (self.m_batch, self.m_stream):
+            w_.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); seg.addWidget(w_)
+        g.v.addLayout(seg)
 
-        self.tr_audio = _combo([("system", "Chỉ hệ thống"), ("both", "Mic + Hệ thống"),
-                                ("mic", "Chỉ mic")], self.te.audio_source)
+        self.tr_audio = _combo(AUDIO_SOURCES, self.te.audio_source)
         self.tr_audio.currentIndexChanged.connect(
             lambda: self.te.set_audio_source(self.tr_audio.currentData()))
-        c.row("Nguồn nghe", self.tr_audio)
+        g.row("Nguồn nghe", self.tr_audio)
         self.tr_src = _combo(SOURCE_LANGS, self.te.source_lang)
         self.tr_src.currentIndexChanged.connect(
             lambda: self.te.set_source_lang(self.tr_src.currentData()))
-        c.row("Ngôn ngữ nghe", self.tr_src)
+        g.row("Ngôn ngữ nghe", self.tr_src)
         self.tr_tgt = _combo(TARGET_LANGS, self.te.target_lang)
         self.tr_tgt.currentIndexChanged.connect(
             lambda: self.te.set_target_lang(self.tr_tgt.currentData()))
-        c.row("Dịch sang", self.tr_tgt)
+        g.row("Dịch sang", self.tr_tgt)
 
-        full = QPushButton("Mở bảng đầy đủ (nhập key Deepgram/Google)…")
-        full.setProperty("class", "act")
-        full.setCursor(Qt.PointingHandCursor)
-        full.clicked.connect(self.pill._open_translate_panel)
-        c.add(full)
-        return c
+        g.divider()
+        cfg = config.load()
+        self.dg_key = self._passwd(cfg.get("deepgram_api_key") or "", "Deepgram key (cho streaming ~0.3s)…")
+        g.add(self._keyrow(self.dg_key, self._save_dg, self._test_dg))
+        self.gg_key = self._passwd(cfg.get("google_translate_api_key") or "", "Google Translate key (để dịch)…")
+        g.add(self._keyrow(self.gg_key, self._save_gg, self._test_gg))
+        self.key_status = QLabel("", objectName="keystatus"); self.key_status.setWordWrap(True)
+        g.add(self.key_status)
+        return g
 
-    # ---- Card Gõ bằng giọng ----
-    def _card_voice(self):
-        import engine as eng_mod
-        c = Card("GÕ BẰNG GIỌNG (PUSH-TO-TALK)", accent=MIC_CLR)
-        hk = eng_mod.HOTKEY_LABELS.get(self.engine.hotkey_name, self.engine.hotkey_name)
+    # ---- Gõ bằng giọng ----
+    def _grp_voice(self):
+        import engine as em
+        g = Group("Gõ bằng giọng")
+        hk = em.HOTKEY_LABELS.get(self.engine.hotkey_name, self.engine.hotkey_name)
         talk = QPushButton(f"Bật/tắt nói  ·  phím {hk}")
-        talk.setProperty("class", "act")
-        talk.setCursor(Qt.PointingHandCursor)
+        talk.setProperty("class", "act"); talk.setCursor(Qt.PointingHandCursor)
         talk.clicked.connect(self.engine.toggle)
-        c.add(talk)
+        g.add(talk)
 
-        # Ngôn ngữ nhận dạng — nhãn 1 dòng, 3 nút segmented ở dòng dưới (đủ chỗ)
-        lb = QLabel("Ngôn ngữ nhận dạng")
-        lb.setStyleSheet(f"color:{TEXT}; font-size:12px;")
-        c.v.addWidget(lb)
-        seg = QHBoxLayout()
-        seg.setSpacing(8)
-        self.v_lang_grp = QButtonGroup(self)
-        self._v_lang_btns = {}
+        lb = QLabel("Ngôn ngữ nhận dạng", objectName="rowlabel"); g.add(lb)
+        seg = QHBoxLayout(); seg.setSpacing(8)
+        self._v_lang = {}
         for code, label in STT_LANGS:
-            btn = self._seg(label)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            self.v_lang_grp.addButton(btn)
+            btn = self._seg(label); btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             btn.clicked.connect(lambda _=False, cc=code: (self.pill._set_language(cc), self._refresh()))
-            self._v_lang_btns[code] = btn
-            seg.addWidget(btn)
-        c.v.addLayout(seg)
+            self._v_lang[code] = btn; seg.addWidget(btn)
+        g.v.addLayout(seg)
 
-        # Model + provider
         self.v_model = _combo([(m, self._short(m)) for m in self.engine.provider.get("models", [])],
                               self.engine.model)
         self.v_model.currentIndexChanged.connect(
             lambda: self.pill._set_model(self.v_model.currentData()))
-        c.row("Chất lượng nhận dạng", self.v_model)
-
-        provs = [(pid, p["display_name"]) for pid, p in stt_providers.all_providers().items()]
-        self.v_prov = _combo(provs, self.engine.provider_id)
+        g.row("Chất lượng nhận dạng", self.v_model)
+        self.v_prov = _combo([(pid, p["display_name"]) for pid, p in stt_providers.all_providers().items()],
+                             self.engine.provider_id)
         self.v_prov.currentIndexChanged.connect(self._on_provider)
-        c.row("Nhà cung cấp STT", self.v_prov)
+        g.row("Nhà cung cấp STT", self.v_prov)
+        self.v_refine = Switch(self.engine.refine, self._set_refine)
+        g.row("Dọn chính tả bằng AI (+0.5s)", self.v_refine, fill=False)
 
-        # Dọn chính tả switch
-        self.v_refine = Switch(self.engine.refine, on_toggle=self._set_refine)
-        c.row("Dọn chính tả bằng AI (+0.5s)", self.v_refine, fill=False)
-
-        key = QPushButton("Đổi/nhập Groq API key…")
-        key.setProperty("class", "act")
-        key.setCursor(Qt.PointingHandCursor)
+        key = QPushButton("Đổi / nhập Groq API key…")
+        key.setProperty("class", "act"); key.setCursor(Qt.PointingHandCursor)
         key.clicked.connect(self.pill._enter_groq_key)
-        c.add(key)
-        return c
+        g.add(key)
+        return g
 
-    # ---- Card Hệ thống ----
-    def _card_system(self):
-        c = Card("HỆ THỐNG", accent=MUTED)
-        self.sys_startup = Switch(install.startup_enabled(), on_toggle=self._set_startup)
-        c.row("Khởi động cùng Windows", self.sys_startup, fill=False)
+    # ---- Hệ thống ----
+    def _grp_system(self):
+        g = Group("Hệ thống")
+        self.sw_start = Switch(install.startup_enabled(), self._set_startup)
+        g.row("Khởi động cùng Windows", self.sw_start, fill=False)
+        g.divider()
         for text, fn in (
-            ("Tạo lối tắt (Start Menu + Desktop)", self._make_shortcuts),
+            ("Tạo lối tắt (Start Menu + Desktop)", self._shortcuts),
             ("Kiểm tra cập nhật", self.pill._manual_check),
             ("Snippets · text-expansion…", self.pill._open_snippets_editor),
             ("Cài đặt nâng cao…", self.pill._open_settings),
         ):
-            btn = QPushButton(text)
-            btn.setProperty("class", "act")
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(fn)
-            c.add(btn)
-        quit_btn = QPushButton("Thoát WakerVoice")
-        quit_btn.setObjectName("danger")
-        quit_btn.setCursor(Qt.PointingHandCursor)
-        quit_btn.clicked.connect(self.pill._quit)
-        c.add(quit_btn)
-        return c
+            btn = QPushButton(text); btn.setProperty("class", "act")
+            btn.setCursor(Qt.PointingHandCursor); btn.clicked.connect(fn); g.add(btn)
+        quit_btn = QPushButton("Thoát WakerVoice"); quit_btn.setObjectName("danger")
+        quit_btn.setCursor(Qt.PointingHandCursor); quit_btn.clicked.connect(self.pill._quit)
+        g.add(quit_btn)
+        return g
 
-    # ----------------------- Helpers -----------------------
+    # ----------------------- helpers -----------------------
     def _seg(self, text):
-        b = QPushButton(text)
-        b.setProperty("class", "seg")
-        b.setCheckable(True)
-        b.setCursor(Qt.PointingHandCursor)
-        return b
+        b = QPushButton(text); b.setProperty("class", "seg"); b.setCheckable(True)
+        b.setCursor(Qt.PointingHandCursor); return b
+
+    def _passwd(self, val, ph):
+        e = QLineEdit(val); e.setEchoMode(QLineEdit.Password); e.setPlaceholderText(ph)
+        return e
+
+    def _keyrow(self, edit, on_save, on_test):
+        w = QWidget(); r = QHBoxLayout(w); r.setContentsMargins(0, 0, 0, 0); r.setSpacing(8)
+        r.addWidget(edit, 1)
+        s = QPushButton("Lưu"); s.setProperty("class", "mini"); s.setCursor(Qt.PointingHandCursor)
+        s.clicked.connect(on_save)
+        t = QPushButton("Test"); t.setProperty("class", "mini"); t.setCursor(Qt.PointingHandCursor)
+        t.clicked.connect(on_test)
+        r.addWidget(s); r.addWidget(t)
+        return w
 
     @staticmethod
     def _short(m):
         return m.replace("whisper-", "").replace("gpt-4o-", "gpt-").replace("-v3", "")
 
     def _on_provider(self):
-        pid = self.v_prov.currentData()
-        self.pill._set_provider(pid)
-        # provider đổi -> model list đổi -> nạp lại combo model
-        self.v_model.blockSignals(True)
-        self.v_model.clear()
+        self.pill._set_provider(self.v_prov.currentData())
+        self.v_model.blockSignals(True); self.v_model.clear()
         for m in self.engine.provider.get("models", []):
             self.v_model.addItem(self._short(m), m)
         for i in range(self.v_model.count()):
             if self.v_model.itemData(i) == self.engine.model:
-                self.v_model.setCurrentIndex(i)
-                break
+                self.v_model.setCurrentIndex(i); break
         self.v_model.blockSignals(False)
 
     def _set_refine(self, on):
@@ -355,49 +381,63 @@ class ControlCenter(QWidget):
         except Exception as e:
             self.pill._notify(f"Lỗi startup: {e}", 3000)
 
-    def _make_shortcuts(self):
+    def _shortcuts(self):
         try:
-            install.create_shortcuts()
-            self.pill._notify("Đã tạo lối tắt.", 2000)
+            install.create_shortcuts(); self.pill._notify("Đã tạo lối tắt.", 2000)
         except Exception as e:
             self.pill._notify(f"Lỗi tạo lối tắt: {e}", 3000)
 
-    # ----------------------- Trạng thái -----------------------
+    def _save_dg(self):
+        self.te.set_deepgram_api_key(self.dg_key.text()); self.key_status.setText("Đã lưu Deepgram key.")
+
+    def _save_gg(self):
+        self.te.set_google_api_key(self.gg_key.text()); self.key_status.setText("Đã lưu Google key.")
+
+    def _test_dg(self):
+        self.te.set_deepgram_api_key(self.dg_key.text())
+        self.key_status.setText("Đang test Deepgram…"); self._run_test(self.te.test_deepgram_key, "Deepgram")
+
+    def _test_gg(self):
+        self.te.set_google_api_key(self.gg_key.text())
+        self.key_status.setText("Đang test Google…"); self._run_test(self.te.test_google_key, "Google")
+
+    def _run_test(self, fn, name):
+        def worker():
+            try:
+                ok, msg = fn()
+            except Exception as e:
+                ok, msg = False, str(e)
+            QTimer.singleShot(0, lambda: self.key_status.setText(f"{'✓' if ok else '✗'} {name}: {msg}"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ----------------------- trạng thái -----------------------
     def _refresh(self):
         on = self.te.is_running()
         streaming = getattr(self.te, "stt_mode", "batch") == "streaming"
-        self.tr_hero.setText("● Đang nghe — bấm để tắt" if on else "Bật dịch nhanh")
+        self.tr_hero.setText("Đang nghe — bấm để tắt" if on else "Bật dịch nhanh")
         self.tr_hero.setProperty("live", "true" if on else "false")
-        self.tr_hero.style().unpolish(self.tr_hero)
-        self.tr_hero.style().polish(self.tr_hero)
+        self.tr_hero.style().unpolish(self.tr_hero); self.tr_hero.style().polish(self.tr_hero)
         self.tr_status.setText(
-            f"{'Đang nghe' if on else 'Đang tắt'} · "
-            f"{'Deepgram ~0.3s (chữ chảy)' if streaming else 'Groq ~1–1.5s'}")
+            ("Đang nghe" if on else "Đang tắt") + " · "
+            + ("Deepgram streaming ~0.3s (chữ chảy realtime)" if streaming else "Groq batch ~1–1.5s"))
         (self.m_stream if streaming else self.m_batch).setChecked(True)
-        for code, btn in getattr(self, "_v_lang_btns", {}).items():
+        for code, btn in getattr(self, "_v_lang", {}).items():
             btn.setChecked(code == self.engine.language)
-        if on:
-            self._pulse.start(650)
-        else:
-            self._pulse.stop()
-
-    def _tick(self):
-        self._pulse_on = not self._pulse_on
 
     def show_center(self):
         self._refresh()
         if not self.isVisible():
             self.adjustSize()
-            g = QGuiApplication.primaryScreen().availableGeometry()
-            self.move(g.center().x() - self.width() // 2,
-                      max(20, g.center().y() - self.height() // 2))
-        self.show()
-        self.raise_()
-        self.activateWindow()
+            gm = QGuiApplication.primaryScreen().availableGeometry()
+            self.move(gm.center().x() - self.width() // 2, max(20, gm.center().y() - self.height() // 2))
+        self.show(); self.raise_(); self.activateWindow()
 
-    # kéo header để di chuyển
+    # header vẽ nền gradient nhẹ (không dây vào QSS translucent)
+    def paintEvent(self, e):
+        pass
+
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton and e.position().y() < 52:
+        if e.button() == Qt.LeftButton and e.position().y() < 54:
             self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
     def mouseMoveEvent(self, e):

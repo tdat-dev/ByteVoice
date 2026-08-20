@@ -57,7 +57,6 @@ import providers as stt_providers
 import settings_ui
 from translate_engine import TranslateEngine
 from caption_overlay import CaptionOverlay
-from translate_panel import TranslatePanel
 from control_center import ControlCenter
 
 # Ngôn ngữ đích nhanh cho menu tray (mã ISO -> nhãn hiển thị)
@@ -172,10 +171,7 @@ class Pill(QWidget):
         self._tsig.sig.connect(self._on_translate_event)
         self.translate_engine = TranslateEngine(
             lambda ev, pl=None: self._tsig.sig.emit(ev, pl))
-        # Bảng điều khiển Dịch nhanh (cửa sổ thật, thay menu chuột phải bé)
-        self.translate_panel = TranslatePanel(
-            self.translate_engine, notify=self._notify, on_toggle=self._panel_toggle)
-        # Bảng điều khiển tổng (thay menu chuột phải list dài)
+        # Bảng điều khiển tổng — cửa sổ DUY NHẤT cho cả app (thay menu khay list dài)
         self.control_center = ControlCenter(self)
 
         self._build_tray()
@@ -301,7 +297,6 @@ class Pill(QWidget):
         self.menu.addSeparator()
 
         # ----------------------- Dịch nhanh (Realtime) -----------------------
-        self.menu.addAction("🎧  Mở bảng Dịch nhanh…", self._open_translate_panel)
         self.translate_action = self.menu.addAction(
             "Bật/tắt nhanh Dịch", self._toggle_translate_mode)
         self.translate_action.setCheckable(True)
@@ -359,9 +354,28 @@ class Pill(QWidget):
         self.menu.addSeparator()
 
         self.menu.addAction("Thoát", self._quit)
+        # ^ self.menu = FULL menu (KHÔNG hiển thị nữa) — giữ lại để mọi action +
+        #   hàm _refresh_* + luồng updater vẫn hoạt động y nguyên, khỏi phải guard.
+
+        # Menu khay THẬT = tối giản. Mọi điều khiển đã dồn vào Bảng điều khiển.
+        m = QMenu()
+        hd = m.addAction(f"WakerVoice v{__version__}")
+        hd.setEnabled(False)
+        m.addSeparator()
+        cc = m.addAction("⚙  Mở bảng điều khiển", self._open_control_center)
+        fnt = cc.font(); fnt.setBold(True); cc.setFont(fnt)
+        m.addAction("Hiện pill", self.show)
+        m.addAction("Bật / tắt nói", self.engine.toggle)
+        m.addSeparator()
+        m.addAction(self.update_action)     # QAction dùng chung — ẩn tới khi có bản mới
+        m.addAction(self.check_action)
+        m.addSeparator()
+        m.addAction("Thoát", self._quit)
+        self._min_menu = m
+
         self.tray = QSystemTrayIcon(self._make_icon(), self)
         self.tray.setToolTip("WakerVoice — voice to text")
-        self.tray.setContextMenu(self.menu)
+        self.tray.setContextMenu(self._min_menu)
         self.tray.activated.connect(self._tray_clicked)
         self.tray.messageClicked.connect(self._on_balloon_clicked)
         self.tray.show()
@@ -422,11 +436,8 @@ class Pill(QWidget):
         # Đồng bộ UI
         if hasattr(self, "translate_action"):
             self.translate_action.setChecked(on)
-        if getattr(self, "translate_panel", None) is not None:
-            self.translate_panel.sync()
-
-    def _open_translate_panel(self):
-        self.translate_panel.show_panel()
+        if getattr(self, "control_center", None) is not None:
+            self.control_center._refresh()
 
     def _refresh_translate_lang_menu(self):
         cur = self.translate_engine.target_lang
