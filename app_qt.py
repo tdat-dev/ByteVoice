@@ -211,10 +211,10 @@ class Pill(QWidget):
                     f"Đã tạo {len(made)} lối tắt & bật khởi động cùng Windows. "
                     "Tắt trong menu khay nếu không muốn.", 7000))
 
-        # Khôi phục Dịch nhanh nếu user đã bật ở lần chạy trước
+        # Khôi phục Dịch nhanh nếu user đã bật ở lần chạy trước — qua _apply_translate
+        # để hiện luôn thanh "Đang nghe" (không auto-start câm khiến user tưởng chết).
         if config.load().get("translate_enabled"):
-            self.translate_action.setChecked(True)
-            self.translate_engine.start()
+            self._apply_translate(True)
 
         # Lần đầu chưa có API key -> nhắc (app cloud-only, cần key mới nói được)
         if not self.engine.api_key:

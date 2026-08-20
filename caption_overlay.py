@@ -8,9 +8,11 @@ always-on-top, click-through khi không hover).
 
 import time
 
-from PySide6.QtCore import Qt, QTimer, QRectF
-from PySide6.QtGui import QPainter, QColor, QPainterPath, QFont, QGuiApplication
+from PySide6.QtCore import Qt, QTimer, QRectF, QPoint
+from PySide6.QtGui import QPainter, QColor, QPainterPath, QFont, QGuiApplication, QCursor
 from PySide6.QtWidgets import QWidget
+
+import config
 
 MAX_LINES = 4                  # số dòng hiện tối đa
 LINE_TTL_S = 8.0                # mỗi dòng tự ẩn sau 8s không có dòng mới
@@ -28,6 +30,9 @@ class CaptionOverlay(QWidget):
     def __init__(self):
         super().__init__()
         self._lines = []           # list of dict {source, original, translated, ts}
+        self._screen = None        # màn hình đang hiện (chọn theo con trỏ lúc bật)
+        self._user_pos = self._load_pos()   # vị trí user đã kéo (nhớ qua config)
+        self._drag = None
 
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
@@ -109,6 +114,8 @@ class CaptionOverlay(QWidget):
     def _trim_show(self):
         if len(self._lines) > MAX_LINES:
             self._lines = self._lines[-MAX_LINES:]
+        if not self.isVisible():
+            self._screen = self._pick_screen()   # chọn màn hình đang xem khi vừa hiện
         self._resize_to_content()
         self._place()
         if not self.isVisible():
@@ -124,7 +131,7 @@ class CaptionOverlay(QWidget):
         đang chạy + thấy chỗ phụ đề sẽ hiện. Tự bị thay khi có transcript thật."""
         self._lines = [{
             "source": "system", "original": "",
-            "translated": "🎧  Đang nghe — phát tiếng để hiện phụ đề…",
+            "translated": "🎧  Đang nghe — kéo thanh này sang màn hình đang xem…",
             "final": True, "placeholder": True, "ts": time.monotonic(),
         }]
         self._trim_show()
@@ -135,6 +142,7 @@ class CaptionOverlay(QWidget):
     def set_active(self, on):
         """Bật/tắt overlay theo translate mode."""
         if on:
+            self._screen = self._pick_screen()   # chốt màn hình đang xem
             self._place()
             self.show()
         else:
@@ -161,11 +169,49 @@ class CaptionOverlay(QWidget):
         h = max(1, len(self._lines)) * LINE_H + PAD_V * 2
         self.setFixedSize(OVERLAY_W, h)
 
+    def _pick_screen(self):
+        """Màn hình ĐANG CÓ CON TRỎ (nơi user đang xem) — không phải luôn màn chính.
+        Nhiều màn: phụ đề phải nằm ở màn đang xem video, không lạc sang màn khác."""
+        scr = QGuiApplication.screenAt(QCursor.pos())
+        return scr or QGuiApplication.primaryScreen()
+
     def _place(self):
-        g = QGuiApplication.primaryScreen().availableGeometry()
+        # Nếu user đã kéo tới vị trí riêng (và vẫn nằm trong 1 màn hình nào đó) -> giữ.
+        if self._user_pos is not None and self._pos_on_screen(self._user_pos):
+            self.move(self._user_pos)
+            return
+        scr = self._screen or QGuiApplication.primaryScreen()
+        g = scr.availableGeometry()
         x = g.center().x() - OVERLAY_W // 2
         y = g.bottom() - self.height() - MARGIN_BOTTOM
         self.move(x, y)
+
+    @staticmethod
+    def _pos_on_screen(pt):
+        """True nếu điểm top-left nằm trong vùng nhìn của một màn hình (chống lạc
+        ra ngoài khi user tháo bớt màn hình)."""
+        for s in QGuiApplication.screens():
+            g = s.availableGeometry()
+            if g.left() <= pt.x() <= g.right() - 60 and g.top() <= pt.y() <= g.bottom() - 30:
+                return True
+        return False
+
+    def _load_pos(self):
+        try:
+            p = config.load().get("translate_overlay_pos")
+            if isinstance(p, (list, tuple)) and len(p) == 2:
+                return QPoint(int(p[0]), int(p[1]))
+        except Exception:
+            pass
+        return None
+
+    def _save_pos(self):
+        try:
+            cfg = config.load()
+            cfg["translate_overlay_pos"] = [self.x(), self.y()]
+            config.save(cfg)
+        except Exception:
+            pass
 
     # ---------------- vẽ ----------------
     def paintEvent(self, e):
@@ -214,3 +260,21 @@ class CaptionOverlay(QWidget):
         if len(text) <= max_chars:
             return text
         return text[:max_chars - 1] + "…"
+
+    # ---------------- kéo thả để đổi màn hình / vị trí (nhớ qua config) ----------------
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            e.accept()
+
+    def mouseMoveEvent(self, e):
+        if self._drag is not None and e.buttons() & Qt.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._drag)
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if self._drag is not None:
+            self._drag = None
+            self._user_pos = self.pos()      # chốt vị trí user chọn
+            self._save_pos()                 # nhớ cho lần sau
+            e.accept()
