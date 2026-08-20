@@ -428,6 +428,9 @@ class Pill(QWidget):
                 self._notify(
                     "Chưa có Google Translate API key — text gốc vẫn hiện, chỉ chưa dịch.", 5000)
             self.translate_engine.start()
+            # Hiện ngay thanh "Đang nghe" để user biết nó chạy + thấy chỗ phụ đề.
+            self.caption_overlay.set_active(True)
+            self.caption_overlay.show_listening()
             self._notify("Đã bật Dịch nhanh.", 2000)
         else:
             self.translate_engine.stop()

@@ -58,6 +58,7 @@ class CaptionOverlay(QWidget):
         final_stream=True (streaming): CHỐT dòng đang chảy của nguồn này — thay
         chữ + đánh dấu final, thay vì thêm dòng mới. Batch (=False): luôn thêm dòng.
         """
+        self._drop_placeholder()
         line = self._streaming_line(source) if final_stream else None
         if line is not None:
             line["original"] = (original or "").strip()
@@ -79,6 +80,7 @@ class CaptionOverlay(QWidget):
 
         Nếu dòng cuối là dòng streaming CHƯA chốt của cùng nguồn -> cập nhật tại chỗ
         (chữ chảy dần). Nếu không -> mở dòng streaming mới."""
+        self._drop_placeholder()
         line = self._streaming_line(source)
         text = (original or "").strip()
         if not text:
@@ -117,6 +119,19 @@ class CaptionOverlay(QWidget):
         self._lines = []
         self.update()
 
+    def show_listening(self):
+        """Hiện thanh chờ khi vừa bật Dịch nhanh (chưa có tiếng) — để user BIẾT nó
+        đang chạy + thấy chỗ phụ đề sẽ hiện. Tự bị thay khi có transcript thật."""
+        self._lines = [{
+            "source": "system", "original": "",
+            "translated": "🎧  Đang nghe — phát tiếng để hiện phụ đề…",
+            "final": True, "placeholder": True, "ts": time.monotonic(),
+        }]
+        self._trim_show()
+
+    def _drop_placeholder(self):
+        self._lines = [l for l in self._lines if not l.get("placeholder")]
+
     def set_active(self, on):
         """Bật/tắt overlay theo translate mode."""
         if on:
@@ -132,7 +147,9 @@ class CaptionOverlay(QWidget):
             return
         now = time.monotonic()
         before = len(self._lines)
-        self._lines = [l for l in self._lines if now - l["ts"] < LINE_TTL_S]
+        # Giữ placeholder "Đang nghe" (không hết hạn) tới khi có transcript / tắt.
+        self._lines = [l for l in self._lines
+                       if l.get("placeholder") or now - l["ts"] < LINE_TTL_S]
         if len(self._lines) != before:
             self._resize_to_content()
             self._place()
