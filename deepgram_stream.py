@@ -87,9 +87,13 @@ class DeepgramStream:
             self._ws = websocket.create_connection(
                 self._url(),
                 header=[f"Authorization: Token {self.api_key}"],
-                timeout=10,
+                timeout=10,                 # chỉ áp cho lúc BẮT TAY kết nối
                 enable_multithread=True,
             )
+            # Sau khi kết nối: recv BLOCKING (timeout=None). Nếu để timeout ngắn thì
+            # lúc im lặng (Deepgram không gửi gì) recv() sẽ tự văng "timed out" và
+            # giết stream. Blocking + dựa vào close() để thoát khi stop().
+            self._ws.settimeout(None)
         except Exception as e:
             self.on_error(f"Không kết nối được Deepgram: {e}")
             return False
@@ -166,10 +170,14 @@ class DeepgramStream:
                 break
 
     def _recv_loop(self):
+        _Timeout = getattr(websocket, "WebSocketTimeoutException", None)
         while not self._stop.is_set():
             try:
                 raw = self._ws.recv()
             except Exception as e:
+                # Timeout khi im lặng = KHÔNG chết, chờ tiếp.
+                if _Timeout is not None and isinstance(e, _Timeout):
+                    continue
                 if not self._stop.is_set():
                     self.on_error(f"Deepgram nhận lỗi: {e}")
                     self._running = False
