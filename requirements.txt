@@ -15,6 +15,10 @@ PyAudioWPatch>=0.2.12.7
 # Nhận dạng: Groq API (đám mây) — gọi bằng urllib stdlib, không cần thư viện thêm.
 # Bản cloud-only: KHÔNG dùng faster-whisper / CUDA nữa.
 
+# Dịch realtime độ trễ thấp (tùy chọn): streaming STT qua Deepgram WebSocket.
+# stdlib không có client websocket nên cần lib này; chỉ dùng khi bật chế độ streaming.
+websocket-client>=1.7
+
 # (bản cũ pywebview giữ lại làm tham khảo: app.py)
 pywebview>=5.0
 pystray>=0.19
