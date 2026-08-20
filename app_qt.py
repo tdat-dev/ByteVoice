@@ -57,6 +57,7 @@ import providers as stt_providers
 import settings_ui
 from translate_engine import TranslateEngine
 from caption_overlay import CaptionOverlay
+from translate_panel import TranslatePanel
 
 # Ngôn ngữ đích nhanh cho menu tray (mã ISO -> nhãn hiển thị)
 TRANSLATE_LANGS = [
@@ -170,6 +171,9 @@ class Pill(QWidget):
         self._tsig.sig.connect(self._on_translate_event)
         self.translate_engine = TranslateEngine(
             lambda ev, pl=None: self._tsig.sig.emit(ev, pl))
+        # Bảng điều khiển Dịch nhanh (cửa sổ thật, thay menu chuột phải bé)
+        self.translate_panel = TranslatePanel(
+            self.translate_engine, notify=self._notify, on_toggle=self._panel_toggle)
 
         self._build_tray()
         self._place_bottom_center()
@@ -292,8 +296,9 @@ class Pill(QWidget):
         self.menu.addSeparator()
 
         # ----------------------- Dịch nhanh (Realtime) -----------------------
+        self.menu.addAction("🎧  Mở bảng Dịch nhanh…", self._open_translate_panel)
         self.translate_action = self.menu.addAction(
-            "Dịch nhanh (Realtime)", self._toggle_translate_mode)
+            "Bật/tắt nhanh Dịch", self._toggle_translate_mode)
         self.translate_action.setCheckable(True)
         self.translate_action.setChecked(False)
         self.translate_lang_menu = self.menu.addMenu("  → Ngôn ngữ đích")
@@ -376,21 +381,40 @@ class Pill(QWidget):
 
     # ---------------- Dịch nhanh (Realtime) ----------------
     def _toggle_translate_mode(self):
-        on = self.translate_action.isChecked()
+        # Từ tray checkbox: trạng thái mong muốn = trạng thái checkbox.
+        self._apply_translate(self.translate_action.isChecked())
+
+    def _panel_toggle(self):
+        # Từ nút lớn trong panel: đảo trạng thái hiện tại.
+        self._apply_translate(not self.translate_engine.is_running())
+
+    def _apply_translate(self, on):
+        """Bật/tắt Dịch nhanh — nguồn chân lý duy nhất, đồng bộ tray + panel + overlay."""
         cfg = config.load()
         cfg["translate_enabled"] = on
         config.save(cfg)
         if on:
-            if not self.translate_engine.google_api_key:
+            streaming = getattr(self.translate_engine, "stt_mode", "batch") == "streaming"
+            if streaming and not self.translate_engine.deepgram_api_key:
                 self._notify(
-                    "Chưa có Google Translate API key — vào Cài đặt → tab "
-                    "Dịch nhanh để nhập. Text gốc vẫn hiện, chỉ chưa dịch.", 6000)
+                    "Chế độ streaming cần Deepgram API key — mở Bảng Dịch nhanh để nhập.", 6000)
+            elif not self.translate_engine.google_api_key:
+                self._notify(
+                    "Chưa có Google Translate API key — text gốc vẫn hiện, chỉ chưa dịch.", 5000)
             self.translate_engine.start()
-            self._notify("Đã bật Dịch nhanh (Realtime).", 2500)
+            self._notify("Đã bật Dịch nhanh.", 2000)
         else:
             self.translate_engine.stop()
             self.caption_overlay.set_active(False)
             self._notify("Đã tắt Dịch nhanh.", 2000)
+        # Đồng bộ UI
+        if hasattr(self, "translate_action"):
+            self.translate_action.setChecked(on)
+        if getattr(self, "translate_panel", None) is not None:
+            self.translate_panel.sync()
+
+    def _open_translate_panel(self):
+        self.translate_panel.show_panel()
 
     def _refresh_translate_lang_menu(self):
         cur = self.translate_engine.target_lang
@@ -422,7 +446,11 @@ class Pill(QWidget):
             self.caption_overlay.set_active(True)
             self.caption_overlay.add_result(
                 pl.get("source", ""), pl.get("original", ""),
-                pl.get("translated", ""))
+                pl.get("translated", ""), final_stream=pl.get("final_stream", False))
+        elif ev == "translate_interim" and isinstance(pl, dict):
+            # Streaming: bản gốc chảy realtime (chưa dịch)
+            self.caption_overlay.set_active(True)
+            self.caption_overlay.stream_interim(pl.get("source", ""), pl.get("text", ""))
         elif ev == "translate_error":
             self._notify(f"Dịch nhanh lỗi: {pl}", 4000)
         elif ev == "translate_state" and pl == "idle":

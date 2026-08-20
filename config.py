@@ -28,6 +28,8 @@ DEFAULTS = {
     "translate_target_lang": "en",            # ngôn ngữ đích (en, vi, ja, zh-CN, ...)
     "translate_source_lang": "auto",          # ngôn ngữ nguồn ("auto" = tự nhận)
     "translate_audio_source": "both",         # nguồn nghe: both (mic+system) | system (chỉ tiếng máy, vd game) | mic
+    "translate_stt_mode": "batch",            # STT: "batch" (Groq, gửi cả cụm) | "streaming" (Deepgram WebSocket, độ trễ ~0.3s)
+    "deepgram_api_key": "",                   # Deepgram API key (chỉ cần khi bật chế độ streaming)
     "google_translate_api_key": "",           # Google Cloud Translation API key hoặc service account JSON
     "translate_hotkey": "f10",                # phím tắt toggle translate mode (riêng, không dùng chung push-to-talk)
 }

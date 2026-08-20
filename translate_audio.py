@@ -37,10 +37,13 @@ MAX_SPEECH_DURATION_S = 3.0
 class AudioCaptureThread(threading.Thread):
     """Base class cho mic + system audio capture. Chạy liên tục khi start(), dừng khi stop()."""
 
-    def __init__(self, source_name, callback):
+    def __init__(self, source_name, callback, raw_sink=None):
         super().__init__(daemon=True)
         self.source_name = source_name  # "mic" | "system"
-        self.callback = callback        # callback(source_name, audio_float32) khi phát hiện đoạn nói
+        self.callback = callback        # callback(source_name, audio_float32) khi phát hiện đoạn nói (chế độ batch)
+        # raw_sink(source_name, frame_float32): nếu đặt -> chế độ STREAMING, đẩy
+        # THẲNG mọi frame liên tục (bỏ VAD), dùng cho Deepgram streaming.
+        self.raw_sink = raw_sink
         self._stop = threading.Event()
         self._buffer = []               # list of float32 arrays
         self._silence_start = None      # thời điểm bắt đầu im lặng
@@ -51,7 +54,15 @@ class AudioCaptureThread(threading.Thread):
         self._stop.set()
 
     def _process_chunk(self, chunk):
-        """Xử lý chunk audio (float32 mono). Triển khai VAD đơn giản."""
+        """Xử lý chunk audio (float32 mono). VAD (batch) hoặc đẩy thẳng (streaming)."""
+        # Chế độ STREAMING: bỏ VAD, đẩy nguyên frame cho sink (Deepgram) xử lý.
+        if self.raw_sink is not None:
+            try:
+                self.raw_sink(self.source_name, chunk)
+            except Exception as e:
+                print(f"[{self.source_name}] raw_sink lỗi: {e}", file=sys.stderr, flush=True)
+            return
+
         rms = float(np.sqrt(np.mean(chunk ** 2)))
         self._last_rms = rms
 
@@ -104,8 +115,8 @@ class AudioCaptureThread(threading.Thread):
 class MicCapture(AudioCaptureThread):
     """Capture mic qua sounddevice (giống engine.py hiện có)."""
 
-    def __init__(self, callback):
-        super().__init__("mic", callback)
+    def __init__(self, callback, raw_sink=None):
+        super().__init__("mic", callback, raw_sink=raw_sink)
         self.audio_queue = queue.Queue()
         self.stream = None
 
@@ -148,8 +159,8 @@ class MicCapture(AudioCaptureThread):
 class SystemAudioCapture(AudioCaptureThread):
     """Capture system audio qua PyAudioWPatch WASAPI loopback."""
 
-    def __init__(self, callback):
-        super().__init__("system", callback)
+    def __init__(self, callback, raw_sink=None):
+        super().__init__("system", callback, raw_sink=raw_sink)
 
     def run(self):
         """Mở WASAPI loopback, resample về 16kHz mono, xử lý VAD."""
@@ -241,14 +252,16 @@ class SystemAudioCapture(AudioCaptureThread):
 class TranslateAudioManager:
     """Quản lý mic + system audio capture cùng lúc. start()/stop() đơn giản."""
 
-    def __init__(self, callback, capture_mic=True, capture_system=True):
-        """callback(source, audio_float32) được gọi khi phát hiện đoạn nói.
+    def __init__(self, callback, capture_mic=True, capture_system=True, raw_sink=None):
+        """callback(source, audio_float32) được gọi khi phát hiện đoạn nói (batch).
 
         capture_mic / capture_system: bật/tắt từng nguồn. Dịch game thường chỉ
-        cần system audio (bỏ mic để khỏi lẫn giọng mình / tiếng phòng)."""
+        cần system audio (bỏ mic để khỏi lẫn giọng mình / tiếng phòng).
+        raw_sink(source, frame): nếu đặt -> chế độ STREAMING (bỏ VAD, đẩy thẳng)."""
         self.callback = callback
         self.capture_mic = bool(capture_mic)
         self.capture_system = bool(capture_system)
+        self.raw_sink = raw_sink
         self.mic_thread = None
         self.system_thread = None
 
@@ -257,10 +270,10 @@ class TranslateAudioManager:
         if self.mic_thread is not None or self.system_thread is not None:
             return  # đã chạy
         if self.capture_mic:
-            self.mic_thread = MicCapture(self.callback)
+            self.mic_thread = MicCapture(self.callback, raw_sink=self.raw_sink)
             self.mic_thread.start()
         if self.capture_system:
-            self.system_thread = SystemAudioCapture(self.callback)
+            self.system_thread = SystemAudioCapture(self.callback, raw_sink=self.raw_sink)
             self.system_thread.start()
         print(f"[TranslateAudio] started mic={self.capture_mic} "
               f"system={self.capture_system}", file=sys.stderr, flush=True)

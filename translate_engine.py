@@ -44,6 +44,7 @@ class TranslateEngine:
         self._xlate_queue = queue.Queue()
         self._stt_worker = None
         self._xlate_worker = None
+        self._dg_streams = {}          # {source: DeepgramStream} — chế độ streaming
         self._stop = threading.Event()
 
         self._load_config()
@@ -68,6 +69,10 @@ class TranslateEngine:
         # Groq, không phải OpenAI) — nếu không thì tự chọn bản nhanh của provider,
         # cuối cùng mới rơi về model push-to-talk / default_model.
         self.model = self._pick_translate_model(cfg)
+
+        # Chế độ STT: "batch" (Groq gửi cả cụm) | "streaming" (Deepgram WebSocket ~0.3s)
+        self.stt_mode = cfg.get("translate_stt_mode", "batch")
+        self.deepgram_api_key = (cfg.get("deepgram_api_key") or "").strip()
 
     # Model STT nhanh nhất đã biết theo từng provider (dùng cho translate mode).
     _FAST_STT = {
@@ -95,25 +100,37 @@ class TranslateEngine:
         self._running = True
         self._stop.clear()
 
+        streaming = (self.stt_mode == "streaming" and bool(self.deepgram_api_key))
+        cap_mic = self.audio_source in ("both", "mic")
+        cap_sys = self.audio_source in ("both", "system")
+
+        if streaming and not self._start_deepgram(cap_mic, cap_sys):
+            # Không mở được Deepgram -> rơi về batch để không mất tính năng
+            streaming = False
+
         try:
             from translate_audio import TranslateAudioManager
-            cap_mic = self.audio_source in ("both", "mic")
-            cap_sys = self.audio_source in ("both", "system")
+            raw_sink = self._dg_raw_sink if streaming else None
             self._audio_manager = TranslateAudioManager(
-                self._on_audio_chunk, capture_mic=cap_mic, capture_system=cap_sys)
+                self._on_audio_chunk, capture_mic=cap_mic, capture_system=cap_sys,
+                raw_sink=raw_sink)
             self._audio_manager.start()
         except Exception as e:
             print(f"[TranslateEngine] audio manager lỗi: {e}", file=sys.stderr, flush=True)
             self.emit("translate_error", f"Không bật được thu âm: {e}")
+            self._stop_deepgram()
             self._running = False
             return
 
-        self._stt_worker = threading.Thread(target=self._stt_loop, daemon=True)
-        self._stt_worker.start()
+        # Tầng dịch luôn chạy (batch dùng cả STT+dịch; streaming chỉ dùng dịch).
+        if not streaming:
+            self._stt_worker = threading.Thread(target=self._stt_loop, daemon=True)
+            self._stt_worker.start()
         self._xlate_worker = threading.Thread(target=self._xlate_loop, daemon=True)
         self._xlate_worker.start()
         self.emit("translate_state", "listening")
-        print("[TranslateEngine] started", file=sys.stderr, flush=True)
+        print(f"[TranslateEngine] started mode={'streaming' if streaming else 'batch'}",
+              file=sys.stderr, flush=True)
 
     def is_running(self):
         """True nếu đang capture + worker xử lý audio."""
@@ -132,6 +149,9 @@ class TranslateEngine:
             except Exception as e:
                 print(f"[TranslateEngine] stop audio lỗi: {e}", file=sys.stderr, flush=True)
             self._audio_manager = None
+
+        # Đóng các kết nối Deepgram (chế độ streaming)
+        self._stop_deepgram()
 
         if self._stt_worker is not None:
             self._stt_worker.join(timeout=3.0)
@@ -160,11 +180,15 @@ class TranslateEngine:
         config.save(cfg)
 
     def set_source_lang(self, lang):
-        """Đổi ngôn ngữ nguồn ("auto" = tự nhận)."""
+        """Đổi ngôn ngữ nguồn ("auto" = tự nhận). Batch đọc live; streaming cần
+        restart vì Deepgram khoá ngôn ngữ lúc bắt tay kết nối."""
         self.source_lang = lang
         cfg = config.load()
         cfg["translate_source_lang"] = lang
         config.save(cfg)
+        if self._running and self.stt_mode == "streaming":
+            self.stop()
+            self.start()
 
     def set_audio_source(self, mode):
         """Đổi nguồn nghe: "both" | "system" | "mic". Đang chạy thì restart capture."""
@@ -188,6 +212,106 @@ class TranslateEngine:
     def test_google_key(self):
         """Ping thử Google Translate API. Trả (ok, msg)."""
         return google_translate.test_connection(self.google_api_key)
+
+    def set_stt_mode(self, mode):
+        """Đổi chế độ STT: "batch" (Groq) | "streaming" (Deepgram). Restart nếu đang chạy."""
+        if mode not in ("batch", "streaming"):
+            return
+        self.stt_mode = mode
+        cfg = config.load()
+        cfg["translate_stt_mode"] = mode
+        config.save(cfg)
+        if self._running:
+            self.stop()
+            self.start()
+
+    def set_deepgram_api_key(self, key):
+        """Lưu Deepgram API key. Restart nếu đang chạy streaming để áp key mới."""
+        self.deepgram_api_key = (key or "").strip()
+        cfg = config.load()
+        cfg["deepgram_api_key"] = self.deepgram_api_key
+        config.save(cfg)
+        if self._running and self.stt_mode == "streaming":
+            self.stop()
+            self.start()
+
+    def test_deepgram_key(self):
+        """Ping thử Deepgram. Trả (ok, msg)."""
+        try:
+            import deepgram_stream as dg
+        except Exception as e:
+            return False, f"Không nạp được Deepgram: {e}"
+        return dg.test_connection(self.deepgram_api_key, language=self._dg_language())
+
+    # ------------------- Streaming (Deepgram) -------------------
+    def _dg_language(self):
+        """Ngôn ngữ đưa cho Deepgram: ISO ngắn, "auto" -> "multi" (nova-3 đa ngữ)."""
+        lang = (self.source_lang or "auto").strip()
+        if lang == "auto":
+            return "multi"
+        return lang.split("-")[0].lower()
+
+    def _start_deepgram(self, cap_mic, cap_sys):
+        """Mở kết nối Deepgram cho mỗi nguồn đang bật. Trả True nếu có ít nhất 1 OK."""
+        try:
+            import deepgram_stream as dg
+        except Exception as e:
+            self.emit("translate_error", f"Không nạp được Deepgram: {e}")
+            return False
+        lang = self._dg_language()
+        sources = ([s for s, on in (("mic", cap_mic), ("system", cap_sys)) if on])
+        ok_any = False
+        for src in sources:
+            stream = dg.DeepgramStream(
+                self.deepgram_api_key, language=lang,
+                on_interim=(lambda t, s=src: self._on_dg_interim(s, t)),
+                on_final=(lambda t, s=src: self._on_dg_final(s, t)),
+                on_error=(lambda m, s=src: self._on_dg_error(s, m)),
+            )
+            if stream.start():
+                self._dg_streams[src] = stream
+                ok_any = True
+        if not ok_any:
+            self.emit("translate_error",
+                      "Không kết nối được Deepgram — kiểm tra API key ở tab Dịch nhanh")
+        return ok_any
+
+    def _stop_deepgram(self):
+        for stream in list(self._dg_streams.values()):
+            try:
+                stream.stop()
+            except Exception:
+                pass
+        self._dg_streams = {}
+
+    def _dg_raw_sink(self, source, frame):
+        """Nhận frame audio liên tục -> đẩy vào kết nối Deepgram của đúng nguồn."""
+        stream = self._dg_streams.get(source)
+        if stream is not None:
+            stream.feed_float32(frame)
+
+    def _on_dg_interim(self, source, text):
+        """Kết quả TẠM từ Deepgram -> hiện bản gốc chảy realtime (chưa dịch)."""
+        if not self._running:
+            return
+        self.emit("translate_interim", {"source": source, "text": (text or "").strip()})
+
+    def _on_dg_final(self, source, text):
+        """Đoạn đã CHỐT -> lọc ảo giác rồi đưa sang tầng dịch (kèm cờ streaming)."""
+        if not self._running:
+            return
+        text = (text or "").strip()
+        if not text or text_filters.is_hallucination(text):
+            return
+        lang = self.source_lang if self.source_lang and self.source_lang != "auto" else ""
+        try:
+            self._xlate_queue.put_nowait((source, text, lang, True))
+        except queue.Full:
+            pass
+
+    def _on_dg_error(self, source, msg):
+        print(f"[TranslateEngine] Deepgram({source}) lỗi: {msg}", file=sys.stderr, flush=True)
+        self.emit("translate_error", f"Deepgram ({source}): {msg}")
 
     # ----------------------- Internal -----------------------
     def _on_audio_chunk(self, source, audio):
@@ -243,18 +367,25 @@ class TranslateEngine:
                   file=sys.stderr, flush=True)
 
             # Chuyển sang tầng dịch (FIFO -> giữ đúng thứ tự trong cùng nguồn).
+            # cờ is_stream=False: đây là kết quả batch (dòng mới trên overlay).
             try:
-                self._xlate_queue.put_nowait((source, text, lang))
+                self._xlate_queue.put_nowait((source, text, lang, False))
             except queue.Full:
                 pass
 
     def _xlate_loop(self):
-        """Tầng 2: text từ STT -> dịch Google -> emit về UI."""
+        """Tầng 2: text (từ STT batch HOẶC Deepgram final) -> dịch -> emit về UI."""
         while not self._stop.is_set():
             try:
-                source, text, lang = self._xlate_queue.get(timeout=0.5)
+                item = self._xlate_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
+            # Tương thích tuple 3 (cũ) lẫn 4 (kèm cờ streaming).
+            if len(item) == 4:
+                source, text, lang, is_stream = item
+            else:
+                source, text, lang = item
+                is_stream = False
 
             try:
                 translated = self._translate_text(text, lang)
@@ -267,6 +398,9 @@ class TranslateEngine:
                 "original": text,
                 "translated": translated,
                 "lang_detected": lang,
+                # final_stream=True -> đây là bản CHỐT của dòng đang chảy (streaming),
+                # overlay finalize dòng interim thay vì thêm dòng mới.
+                "final_stream": is_stream,
             })
 
     def _transcribe(self, audio):

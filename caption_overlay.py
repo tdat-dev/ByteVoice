@@ -52,14 +52,59 @@ class CaptionOverlay(QWidget):
         self.hide()     # ẩn mặc định — chỉ hiện khi translate mode bật
 
     # ---------------- API công khai ----------------
-    def add_result(self, source, original, translated):
-        """Thêm 1 dòng caption mới (source='mic'|'system')."""
-        self._lines.append({
-            "source": source,
-            "original": (original or "").strip(),
-            "translated": (translated or "").strip(),
-            "ts": time.monotonic(),
-        })
+    def add_result(self, source, original, translated, final_stream=False):
+        """Thêm/chốt 1 dòng caption (source='mic'|'system').
+
+        final_stream=True (streaming): CHỐT dòng đang chảy của nguồn này — thay
+        chữ + đánh dấu final, thay vì thêm dòng mới. Batch (=False): luôn thêm dòng.
+        """
+        line = self._streaming_line(source) if final_stream else None
+        if line is not None:
+            line["original"] = (original or "").strip()
+            line["translated"] = (translated or "").strip()
+            line["final"] = True
+            line["ts"] = time.monotonic()
+        else:
+            self._lines.append({
+                "source": source,
+                "original": (original or "").strip(),
+                "translated": (translated or "").strip(),
+                "final": True,
+                "ts": time.monotonic(),
+            })
+        self._trim_show()
+
+    def stream_interim(self, source, original):
+        """Cập nhật bản GỐC đang chảy realtime (chưa dịch) của một nguồn.
+
+        Nếu dòng cuối là dòng streaming CHƯA chốt của cùng nguồn -> cập nhật tại chỗ
+        (chữ chảy dần). Nếu không -> mở dòng streaming mới."""
+        line = self._streaming_line(source)
+        text = (original or "").strip()
+        if not text:
+            return
+        if line is not None:
+            line["original"] = text
+            line["ts"] = time.monotonic()
+        else:
+            self._lines.append({
+                "source": source,
+                "original": text,
+                "translated": "",
+                "final": False,
+                "ts": time.monotonic(),
+            })
+        self._trim_show()
+
+    def _streaming_line(self, source):
+        """Dòng streaming CHƯA chốt gần nhất của nguồn (để cập nhật/chốt). None nếu không có."""
+        if self._lines:
+            last = self._lines[-1]
+            if last.get("source") == source and not last.get("final", True):
+                return last
+        return None
+
+    def _trim_show(self):
         if len(self._lines) > MAX_LINES:
             self._lines = self._lines[-MAX_LINES:]
         self._resize_to_content()
@@ -131,10 +176,11 @@ class CaptionOverlay(QWidget):
         p.drawText(QRectF(pad_l, y0, 90, 20), Qt.AlignLeft | Qt.AlignVCenter,
                   f"{label}")
 
-        # Text gốc (nhỏ, mờ) — chỉ hiện nếu khác text dịch
+        # Text gốc (nhỏ, mờ) — chỉ hiện khi ĐÃ có bản dịch và khác nhau. Lúc đang
+        # chảy (interim, chưa dịch) thì bản gốc hiện ở dòng lớn bên dưới, khỏi lặp.
         orig = line["original"]
         trans = line["translated"]
-        if orig and orig != trans:
+        if orig and trans and orig != trans:
             p.setFont(self._font_orig)
             p.setPen(QColor(190, 190, 200, 190))
             p.drawText(QRectF(pad_l + 95, y0, w - pad_l - 115, 20),

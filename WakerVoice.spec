@@ -32,9 +32,19 @@ for pkg in ("sounddevice", "pyaudiowpatch"):
     binaries += b
     hiddenimports += h
 
+# websocket-client cho Deepgram streaming (import lồng trong deepgram_stream)
+try:
+    d, b, h = collect_all("websocket")
+    datas += d
+    binaries += b
+    hiddenimports += h
+except Exception:
+    pass
+
 hiddenimports += ["pynput.keyboard._win32", "pynput.mouse._win32",
                   "translate_audio", "translate_engine", "google_translate",
-                  "caption_overlay", "text_filters"]
+                  "caption_overlay", "text_filters", "deepgram_stream",
+                  "translate_panel", "websocket"]
 
 a = Analysis(
     ["app_qt.py"],
