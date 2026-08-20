@@ -19,6 +19,11 @@ import sys
 import threading
 import queue
 
+try:
+    import numpy as np
+except Exception:
+    np = None
+
 import config
 import providers as stt_providers
 import google_translate
@@ -289,6 +294,17 @@ class TranslateEngine:
         stream = self._dg_streams.get(source)
         if stream is not None:
             stream.feed_float32(frame)
+            # Log mức âm lượng định kỳ để chẩn đoán: audio có TỚI Deepgram không
+            # (peak≈0 = không có tiếng / sai thiết bị; peak>0 = có tiếng, im lời = do nhạc).
+            self._lvl_n = getattr(self, "_lvl_n", 0) + 1
+            self._lvl_peak = max(getattr(self, "_lvl_peak", 0.0), float(np.max(np.abs(frame))) if np is not None and frame is not None and len(frame) else 0.0)
+            if self._lvl_n >= 100:      # ~ mỗi vài giây
+                print(f"[audio-lvl] {source} peak={self._lvl_peak:.4f} (100 frame)",
+                      file=sys.stderr, flush=True)
+                # Báo UI mức âm lượng -> placeholder biết "có tiếng nhưng chưa ra lời"
+                self.emit("translate_audio_level", {"peak": self._lvl_peak})
+                self._lvl_n = 0
+                self._lvl_peak = 0.0
 
     def _on_dg_interim(self, source, text):
         """Kết quả TẠM từ Deepgram -> hiện bản gốc chảy realtime (chưa dịch)."""

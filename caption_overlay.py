@@ -139,6 +139,19 @@ class CaptionOverlay(QWidget):
     def _drop_placeholder(self):
         self._lines = [l for l in self._lines if not l.get("placeholder")]
 
+    def note_audio(self, peak):
+        """Đổi chữ thanh chờ theo mức tiếng nghe được: giúp user phân biệt
+        'chưa có tiếng' vs 'có tiếng nhưng chưa ra lời' (thường do NHẠC/HÁT)."""
+        if not self._lines or not self._lines[-1].get("placeholder"):
+            return
+        if peak >= 0.08:
+            txt = "🎧  Nghe thấy tiếng — đợi lời NÓI (nhạc/hát thường không ra chữ)"
+        else:
+            txt = "🎧  Đang nghe — chưa có tiếng. Phát video có người nói…"
+        if self._lines[-1]["translated"] != txt:
+            self._lines[-1]["translated"] = txt
+            self.update()
+
     def set_active(self, on):
         """Bật/tắt overlay theo translate mode."""
         if on:

@@ -477,6 +477,9 @@ class Pill(QWidget):
             # Streaming: bản gốc chảy realtime (chưa dịch)
             self.caption_overlay.set_active(True)
             self.caption_overlay.stream_interim(pl.get("source", ""), pl.get("text", ""))
+        elif ev == "translate_audio_level" and isinstance(pl, dict):
+            # Cập nhật thanh chờ: có tiếng hay không (giúp user hiểu vì sao chưa ra chữ)
+            self.caption_overlay.note_audio(float(pl.get("peak", 0.0)))
         elif ev == "translate_error":
             self._notify(f"Dịch nhanh lỗi: {pl}", 4000)
         elif ev == "translate_state" and pl == "idle":
