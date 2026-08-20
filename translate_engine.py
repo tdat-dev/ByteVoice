@@ -294,13 +294,16 @@ class TranslateEngine:
         """Kết quả TẠM từ Deepgram -> hiện bản gốc chảy realtime (chưa dịch)."""
         if not self._running:
             return
-        self.emit("translate_interim", {"source": source, "text": (text or "").strip()})
+        text = (text or "").strip()
+        print(f"[dg-interim] {source}: {text!r}", file=sys.stderr, flush=True)
+        self.emit("translate_interim", {"source": source, "text": text})
 
     def _on_dg_final(self, source, text):
         """Đoạn đã CHỐT -> lọc ảo giác rồi đưa sang tầng dịch (kèm cờ streaming)."""
         if not self._running:
             return
         text = (text or "").strip()
+        print(f"[dg-final] {source}: {text!r}", file=sys.stderr, flush=True)
         if not text or text_filters.is_hallucination(text):
             return
         lang = self.source_lang if self.source_lang and self.source_lang != "auto" else ""

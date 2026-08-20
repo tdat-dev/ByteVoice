@@ -16,8 +16,8 @@ Nuốt lỗi -> app không chết vì panel.
 
 import threading
 
-from PySide6.QtCore import Qt, QTimer, QRectF
-from PySide6.QtGui import QPainter, QColor, QGuiApplication, QLinearGradient
+from PySide6.QtCore import Qt, QTimer, QRectF, Signal
+from PySide6.QtGui import QPainter, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QLineEdit, QFrame, QScrollArea, QSizePolicy, QButtonGroup,
@@ -196,6 +196,9 @@ QPushButton#danger:hover {{ background:rgba(255,90,90,0.10); }}
 
 
 class ControlCenter(QWidget):
+    # Kết quả test key về từ thread worker -> marshaling an toàn sang GUI thread.
+    _test_result = Signal(str)
+
     def __init__(self, pill):
         super().__init__()
         self.pill = pill
@@ -209,7 +212,7 @@ class ControlCenter(QWidget):
         self.setFixedWidth(460)
         self.setStyleSheet(_QSS)
         self._build()
-        self._pulse = QTimer(self); self._pulse.timeout.connect(lambda: None)
+        self._test_result.connect(self.key_status.setText)
 
     # ----------------------- Dựng -----------------------
     def _build(self):
@@ -407,7 +410,8 @@ class ControlCenter(QWidget):
                 ok, msg = fn()
             except Exception as e:
                 ok, msg = False, str(e)
-            QTimer.singleShot(0, lambda: self.key_status.setText(f"{'✓' if ok else '✗'} {name}: {msg}"))
+            # Signal (queued connection) -> chạy setText trên GUI thread an toàn.
+            self._test_result.emit(f"{'✓' if ok else '✗'} {name}: {msg}")
         threading.Thread(target=worker, daemon=True).start()
 
     # ----------------------- trạng thái -----------------------
