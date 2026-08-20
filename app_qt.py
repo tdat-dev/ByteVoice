@@ -58,6 +58,7 @@ import settings_ui
 from translate_engine import TranslateEngine
 from caption_overlay import CaptionOverlay
 from translate_panel import TranslatePanel
+from control_center import ControlCenter
 
 # Ngôn ngữ đích nhanh cho menu tray (mã ISO -> nhãn hiển thị)
 TRANSLATE_LANGS = [
@@ -174,6 +175,8 @@ class Pill(QWidget):
         # Bảng điều khiển Dịch nhanh (cửa sổ thật, thay menu chuột phải bé)
         self.translate_panel = TranslatePanel(
             self.translate_engine, notify=self._notify, on_toggle=self._panel_toggle)
+        # Bảng điều khiển tổng (thay menu chuột phải list dài)
+        self.control_center = ControlCenter(self)
 
         self._build_tray()
         self._place_bottom_center()
@@ -258,6 +261,8 @@ class Pill(QWidget):
         header = self.menu.addAction(f"WakerVoice v{__version__}")
         header.setEnabled(False)
         self.menu.addSeparator()
+        cc = self.menu.addAction("⚙  Mở bảng điều khiển…", self._open_control_center)
+        f = cc.font(); f.setBold(True); cc.setFont(f)
         self.menu.addAction("Bật / tắt nói", self.engine.toggle)
         self.menu.addAction("Hiện pill", self.show)
         self.menu.addSeparator()
@@ -362,8 +367,15 @@ class Pill(QWidget):
         self.tray.show()
 
     def _tray_clicked(self, reason):
-        if reason == QSystemTrayIcon.Trigger:      # click trái tray -> bật/tắt nói
+        # Click trái icon khay -> mở Bảng điều khiển (UI thật thay menu list dài).
+        # Double-click -> bật/tắt nói nhanh (giữ hành vi cũ cho ai quen).
+        if reason == QSystemTrayIcon.Trigger:
+            self._open_control_center()
+        elif reason == QSystemTrayIcon.DoubleClick:
             self.engine.toggle()
+
+    def _open_control_center(self):
+        self.control_center.show_center()
 
     # ---------------- ngôn ngữ ----------------
     def _refresh_lang_menu(self):

@@ -44,7 +44,7 @@ except Exception:
 hiddenimports += ["pynput.keyboard._win32", "pynput.mouse._win32",
                   "translate_audio", "translate_engine", "google_translate",
                   "caption_overlay", "text_filters", "deepgram_stream",
-                  "translate_panel", "websocket"]
+                  "translate_panel", "control_center", "websocket"]
 
 a = Analysis(
     ["app_qt.py"],
