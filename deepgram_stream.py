@@ -71,7 +71,9 @@ class DeepgramStream:
             f"?model={self.model}&language={self.language}"
             f"&encoding=linear16&sample_rate={self.sample_rate}&channels=1"
             "&interim_results=true&punctuate=true&smart_format=true"
-            "&endpointing=300"
+            # endpointing thấp -> câu CHỐT (bản dịch) đến nhanh hơn (bớt cảm giác ỳ).
+            # 150ms đủ để không cắt vụn giữa câu mà vẫn nhạy.
+            "&endpointing=150"
         )
         return DG_WS_URL + p
 
